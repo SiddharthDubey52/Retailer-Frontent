@@ -51,8 +51,7 @@ import {
 import "./ShopApp.css";
 import "./ShopAppExtras.css";
 
-// const apiBase = (import.meta.env.VITE_API_URL || "/api").replace(/\/$/, "");
-const apiBase = "https://retailer-backend-ik73.onrender.com/api";
+const apiBase = (import.meta.env.VITE_API_URL || "/api").replace(/\/$/, "");
 const TOKEN_KEY = "shop_token";
 const getToken = () => {
   try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
