@@ -1,0 +1,23 @@
+.low-stock-alert { display:flex; align-items:flex-start; gap:11px; margin:-6px 0 16px; padding:12px 14px; color:#a66a31; border:1px solid #f0dfc8; border-radius:6px; background:#fffaf2; }
+.lookup-warning { margin:-7px 0 12px; color:#9a866d; font-size:9px; line-height:1.5; }
+.lookup-note { display:flex; align-items:flex-start; gap:7px; margin:-5px 0 14px; padding:8px 10px; border:1px solid transparent; border-radius:5px; font-size:10px; line-height:1.5; }
+.lookup-note svg { flex:0 0 auto; margin-top:1px; }
+.lookup-note.success { color:#347453; border-color:#dfede3; background:#f4faf6; }
+.lookup-note.failure { color:#976340; border-color:#f0e5d7; background:#fffaf4; }
+.auth-panel { padding-block:26px; }
+.auth-copy { padding-block:28px; }
+.low-stock-alert>svg { flex:0 0 auto; margin-top:1px; }
+.low-stock-alert>div { display:flex; flex-direction:column; gap:4px; }
+.low-stock-alert strong { font-size:10px; }
+.low-stock-alert span { color:#9b866d; font-size:9px; line-height:1.55; }
+.inventory-filters { display:flex; flex-wrap:wrap; align-items:flex-end; gap:9px; margin:-3px 0 13px; padding:11px; border:1px solid #e7ece8; border-radius:6px; background:#fff; }
+.inventory-filters>span { display:flex; align-items:center; gap:6px; align-self:center; margin-right:4px; color:#748078; font-size:10px; font-weight:600; }
+.inventory-filters label { display:flex; flex-direction:column; gap:4px; color:#8a958d; font-size:8px; }
+.inventory-filters input,.inventory-filters select { width:128px; height:30px; padding:0 7px; color:#435248; border:1px solid #e2e8e3; border-radius:4px; background:#fff; font-size:9px; }
+.inventory-filters input[type="date"] { width:136px; }
+.pagination { display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-top:1px solid #edf0ee; color:#89948c; font-size:9px; }
+.pagination>div { display:flex; }
+.report-segment-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:13px; margin-bottom:14px; }
+.report-segment-grid .report-breakdown { min-height:190px; padding:16px; }
+.breakdown-empty { margin:20px 0 0; color:#9aa39c; font-size:10px; }
+@media(max-width:800px) { .report-segment-grid { grid-template-columns:1fr; } }
