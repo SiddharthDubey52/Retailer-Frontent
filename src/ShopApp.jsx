@@ -1115,6 +1115,7 @@ const emptyDevice = () => ({
   modelNumber: "",
   imei1: "",
   imei2: "",
+  serialNumber: "",
   ram: "",
   storage: "",
   color: "",
@@ -1300,7 +1301,13 @@ function StockPage({ notify }) {
                 placeholder="Optional"
                 maxLength={15}
               />
-              <span />
+              <Field
+                label="Serial number (S/N)"
+                value={form.serialNumber}
+                onChange={(value) => update("serialNumber", value.toUpperCase().slice(0, 60))}
+                placeholder="Scan the S/N barcode or type it"
+                maxLength={60}
+              />
               <Field
                 label="Company / brand"
                 label="Brand name"
@@ -1439,6 +1446,11 @@ function StockPage({ notify }) {
         <ScannerModal
           onScan={(imei) => {
             setPrimaryImei(imei);
+            setScanner(false);
+            setError("");
+          }}
+          onSerial={(serialNumber) => {
+            update("serialNumber", serialNumber);
             setScanner(false);
             setError("");
           }}
@@ -1852,6 +1864,7 @@ function SaleModal({ sale, onClose }) {
         <Detail label="IMEI 1" value={item.imei1} />
         <Detail label="IMEI 2" value={item.imei2 || "—"} />
         <Detail label="Dealer" value={item.dealerName || "—"} />
+        <Detail label="Serial number" value={item.serialNumber || "—"} />
         <Detail label="Invoice" value={item.invoiceNumber || "—"} />
         <Detail label="Purchase date" value={date(item.purchaseDate)} />
         <Detail label="Sale date" value={dateTime(sale.soldAt)} />
@@ -2410,7 +2423,7 @@ function DealersPage({ notify }) {
   );
 }
 
-function ScannerModal({ onScan, onClose }) {
+function ScannerModal({ onScan, onSerial, onClose }) {
   const [message, setMessage] = useState("Requesting camera access…");
   useEffect(() => {
     let scanner;
@@ -2426,9 +2439,14 @@ function ScannerModal({ onScan, onClose }) {
             if (imei) {
               onScan(imei);
               scanner.stop().catch(() => {});
+            } else if (onSerial && parseSerial(text)) {
+              onSerial(parseSerial(text));
+              scanner.stop().catch(() => {});
             } else if (active)
               setMessage(
-                "Barcode found, but it does not contain a supported 15-digit IMEI. Enter it manually.",
+                onSerial
+                  ? "Barcode found, but it is not an IMEI or serial number. Enter it manually."
+                  : "Barcode found, but it does not contain a supported 15-digit IMEI. Enter it manually.",
               );
           },
           () => {},
@@ -2446,12 +2464,12 @@ function ScannerModal({ onScan, onClose }) {
       window.clearTimeout(timer);
       if (scanner?.isScanning) scanner.stop().catch(() => {});
     };
-  }, [onScan]);
+  }, [onScan, onSerial]);
   return (
     <Modal title="Scan device barcode" onClose={onClose}>
       <p className="scanner-copy">
         Use the phone's rear camera. The scanner accepts labeled IMEI or
-        supported 8004 barcode data.
+        supported 8004 barcode data{onSerial ? ", and the S/N (serial number) barcode" : ""}.
       </p>
       <div id="imei-camera-reader" className="scanner-view" />
       <div className="scanner-status">
@@ -2490,6 +2508,17 @@ function parseImei(raw) {
   const labeled = input.match(/\b(?:IMEI(?:\s*[12])?|8004)\D{0,16}(\d{15})\b/i)?.[1];
   if (labeled && isValidImeiClient(labeled)) return labeled;
   return (input.match(/\d{15}/g) || []).find(isValidImeiClient) || "";
+}
+
+// Serial number from an S/N barcode, e.g. "S/N: R58N123ABC", "SN R58N123ABC" or just "R58N123ABC".
+// Product barcodes (EAN/UPC, 8-14 digits) and IMEIs are not treated as serial numbers.
+function parseSerial(raw) {
+  const input = String(raw || "").trim().toUpperCase();
+  const labeled = input.match(/(?:S\/N|SN|SERIAL(?:\s*NO\.?|\s*NUMBER)?)\s*[:#.-]?\s*([A-Z0-9][A-Z0-9-]{4,39})/)?.[1];
+  const value = labeled || input;
+  if (!/^[A-Z0-9][A-Z0-9-]{4,39}$/.test(value)) return "";
+  if (!labeled && /^\d{8,15}$/.test(value)) return "";
+  return value;
 }
 
 function Modal({ title, onClose, children }) {
