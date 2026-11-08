@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import {
   NavLink,
   Route,
   Routes,
   useLocation,
   useNavigate,
+  useParams,
+  useSearchParams,
 } from "react-router-dom";
 import { Html5Qrcode } from "html5-qrcode";
 import {
@@ -22,18 +24,28 @@ import {
   ChevronRight,
   CircleAlert,
   ClipboardList,
+  Download,
   Eye,
+  EyeOff,
   FileDown,
   FileText,
+  KeyRound,
+  Lock,
+  LockOpen,
   Filter,
   LogOut,
   Menu,
+  PackagePlus,
+  Paperclip,
+  Pencil,
   Plus,
   Search,
   Settings2,
   ShieldCheck,
   Smartphone,
+  Trash2,
   TrendingUp,
+  Upload,
   Wallet,
   X,
 } from "lucide-react";
@@ -50,6 +62,7 @@ import {
 } from "recharts";
 import "./ShopApp.css";
 import "./ShopAppExtras.css";
+import "./ShopAppResponsive.css";
 
 const MANUAL_LOOKUP_MESSAGE = "Device details could not be identified automatically. Please enter the details manually.";
 const apiBase = (import.meta.env.VITE_API_URL || "/api").replace(/\/$/, "");
@@ -66,7 +79,7 @@ async function api(path, options = {}) {
     ...options,
     credentials: "include",
     headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(typeof options.body === "string" ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
@@ -86,8 +99,9 @@ async function api(path, options = {}) {
   return result;
 }
 
+// null = withheld by the server because financial information is locked.
 const money = (value = 0) =>
-  new Intl.NumberFormat("en-IN", {
+  value === null ? "₹ ••••" : new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: "INR",
     maximumFractionDigits: 0,
@@ -408,11 +422,13 @@ function AuthArt() {
 const navigation = [
   { to: "/", label: "Overview", icon: Activity },
   { to: "/inventory", label: "Inventory", icon: Boxes },
+  { to: "/invoices", label: "Purchase invoices", icon: FileText },
   { to: "/purchases", label: "Stock in", icon: ArrowDownToLine },
   { to: "/sell", label: "Sell a mobile", icon: ArrowUpRight },
   { to: "/sold", label: "Sold mobiles", icon: ClipboardList },
   { to: "/reports", label: "Profit & reports", icon: BarChart3 },
   { to: "/dealers", label: "Dealers", icon: Building2 },
+  { to: "/security", label: "Security", icon: ShieldCheck },
 ];
 
 function Workspace({ user, signOut, notify, toast }) {
@@ -420,9 +436,9 @@ function Workspace({ user, signOut, notify, toast }) {
   const [signingOut, setSigningOut] = useState(false);
   const location = useLocation();
   const active =
-    navigation.find((item) => item.to === location.pathname)?.label ||
+    navigation.find((item) => item.to === location.pathname || (item.to !== "/" && location.pathname.startsWith(`${item.to}/`)))?.label ||
     "Overview";
-  const mobileNav = navigation.slice(0, 5);
+  const mobileNav = navigation.filter((item) => item.to !== "/invoices").slice(0, 5);
   async function handleSignOut() {
     setSigningOut(true);
     try {
@@ -432,6 +448,7 @@ function Workspace({ user, signOut, notify, toast }) {
     }
   }
   return (
+    <FinancialProvider>
     <div className="app-shell">
       <aside className={`sidebar ${menuOpen ? "sidebar-open" : ""}`}>
         <div className="side-brand">
@@ -520,6 +537,7 @@ function Workspace({ user, signOut, notify, toast }) {
             <strong>{active}</strong>
           </div>
           <div className="topbar-actions">
+            <FinancialChip />
             <span className="connection-pill">
               <i /> Connected
             </span>
@@ -543,10 +561,15 @@ function Workspace({ user, signOut, notify, toast }) {
               element={<InventoryPage notify={notify} />}
             />
             <Route path="/purchases" element={<StockPage notify={notify} />} />
+            <Route path="/invoices" element={<InvoicesPage />} />
+            <Route path="/invoices/new" element={<InvoiceFormPage notify={notify} />} />
+            <Route path="/invoices/:id" element={<InvoiceDetailPage notify={notify} />} />
+            <Route path="/invoices/:id/edit" element={<InvoiceFormPage notify={notify} />} />
             <Route path="/sell" element={<SellPage notify={notify} />} />
             <Route path="/sold" element={<SoldPage />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/dealers" element={<DealersPage notify={notify} />} />
+            <Route path="/security" element={<SecurityPage notify={notify} />} />
           </Routes>
           <footer className="page-footer">
             <span>
@@ -587,6 +610,833 @@ function Workspace({ user, signOut, notify, toast }) {
         </div>
       )}
     </div>
+    </FinancialProvider>
+  );
+}
+
+// ---------------- Financial PIN protection ----------------
+// The server decides what is returned; this layer only asks for the PIN and refreshes pages.
+// The unlock lives in an HttpOnly cookie, so nothing about it is kept in JS storage.
+const FinancialContext = createContext({
+  pinEnabled: false, unlocked: false, locked: false, expiresAt: null, version: 0,
+  ensureUnlocked: async () => true, lock: async () => {}, refresh: async () => null,
+});
+const useFinancial = () => useContext(FinancialContext);
+
+function FinancialProvider({ children }) {
+  const [status, setStatus] = useState({ pinEnabled: false, unlocked: false, expiresAt: null, loaded: false });
+  const [version, setVersion] = useState(0);
+  const [prompt, setPrompt] = useState(null);
+  const refresh = useCallback(async () => {
+    try {
+      const next = await api("/financial/status");
+      setStatus((current) => {
+        if (current.unlocked && !next.unlocked) setVersion((v) => v + 1);
+        return { ...next, loaded: true };
+      });
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+  useEffect(() => {
+    refresh();
+    const onFocus = () => refresh();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refresh]);
+  // Automatic relock when the server-side window ends; pages refetch redacted data.
+  useEffect(() => {
+    if (!status.unlocked || !status.expiresAt) return undefined;
+    const timer = window.setTimeout(() => {
+      setStatus((current) => ({ ...current, unlocked: false, expiresAt: null }));
+      setVersion((v) => v + 1);
+    }, Math.max(0, new Date(status.expiresAt) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [status.unlocked, status.expiresAt]);
+  const ensureUnlocked = useCallback(async () => {
+    const current = await refresh();
+    if (!current) return false;
+    if (!current.pinEnabled || current.unlocked) return true;
+    return new Promise((resolve) => setPrompt({ resolve }));
+  }, [refresh]);
+  const lock = useCallback(async () => {
+    await api("/financial/lock", { method: "POST" }).catch(() => {});
+    setStatus((current) => ({ ...current, unlocked: false, expiresAt: null }));
+    setVersion((v) => v + 1);
+  }, []);
+  const markUnlocked = (expiresAt) => {
+    setStatus((current) => ({ ...current, pinEnabled: true, unlocked: true, expiresAt }));
+    setVersion((v) => v + 1);
+  };
+  const value = {
+    ...status,
+    locked: status.pinEnabled && !status.unlocked,
+    version,
+    ensureUnlocked,
+    lock,
+    refresh,
+    markUnlocked,
+  };
+  return (
+    <FinancialContext.Provider value={value}>
+      {children}
+      {prompt && (
+        <PinModal
+          onVerified={(expiresAt) => {
+            markUnlocked(expiresAt);
+            prompt.resolve(true);
+            setPrompt(null);
+          }}
+          onCancel={() => {
+            prompt.resolve(false);
+            setPrompt(null);
+          }}
+        />
+      )}
+    </FinancialContext.Provider>
+  );
+}
+
+function PinInput({ value, onChange, label = "4-digit PIN", autoFocus = false }) {
+  const [show, setShow] = useState(false);
+  return (
+    <label className="field pin-field">
+      <span>{label}</span>
+      <span className="pin-input-wrap">
+        <input
+          type={show ? "text" : "password"}
+          inputMode="numeric"
+          autoComplete="off"
+          pattern="\d{4}"
+          maxLength={4}
+          value={value}
+          autoFocus={autoFocus}
+          onChange={(event) => onChange(event.target.value.replace(/\D/g, "").slice(0, 4))}
+          className="pin-input"
+          placeholder="••••"
+          required
+        />
+        <button
+          type="button"
+          className="pin-toggle"
+          onClick={() => setShow(!show)}
+          aria-label={show ? "Hide PIN" : "Show PIN"}
+          title={show ? "Hide PIN" : "Show PIN"}
+        >
+          {show ? <EyeOff size={17} /> : <Eye size={17} />}
+        </button>
+      </span>
+    </label>
+  );
+}
+
+function pinErrorMessage(error) {
+  if (error.status === 429) return "Too many incorrect attempts. Try again later.";
+  if (error.status === 400) return error.message;
+  if (error.status === 401) return "Incorrect PIN.";
+  return error.message || "Could not verify the PIN.";
+}
+
+function PinModal({ onVerified, onCancel }) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(event) {
+    event.preventDefault();
+    if (!/^\d{4}$/.test(pin)) return setError("Enter your 4-digit PIN.");
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api("/financial/verify", { method: "POST", body: JSON.stringify({ pin }) });
+      setPin("");
+      onVerified(result.expiresAt);
+    } catch (requestError) {
+      setPin("");
+      setError(pinErrorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Financial Information Protected" onClose={onCancel}>
+      <form className="stack-form pin-modal" onSubmit={submit}>
+        <p className="pin-modal-text">
+          <Lock size={16} /> Enter your 4-digit security PIN to continue.
+        </p>
+        <PinInput value={pin} onChange={setPin} autoFocus />
+        {error && <Notice message={error} />}
+        <div className="pin-actions">
+          <button type="button" className="button outline" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="button primary" disabled={busy || pin.length !== 4}>
+            {busy ? "Verifying…" : "Verify"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function FinancialChip() {
+  const fin = useFinancial();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!fin.unlocked) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [fin.unlocked]);
+  if (!fin.pinEnabled) return null;
+  if (!fin.unlocked)
+    return (
+      <button className="financial-chip locked" type="button" onClick={() => fin.ensureUnlocked()} title="Unlock financial information" aria-label="Financial information locked. Unlock with PIN">
+        <Lock size={14} /> <span className="chip-label">Financials locked</span>
+      </button>
+    );
+  const left = Math.max(0, Math.round((new Date(fin.expiresAt) - now) / 1000));
+  return (
+    <span className="financial-chip unlocked">
+      <LockOpen size={14} />
+      <span className="chip-label">Unlocked · </span>
+      {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}
+      <button type="button" onClick={() => fin.lock()}>Lock now</button>
+    </span>
+  );
+}
+
+function FinancialLockedBanner() {
+  const fin = useFinancial();
+  return (
+    <div className="financial-banner">
+      <Lock size={16} />
+      <span>Purchase prices and profit are hidden.</span>
+      <button className="button outline" type="button" onClick={() => fin.ensureUnlocked()}>
+        Unlock with PIN
+      </button>
+    </div>
+  );
+}
+
+function FinancialLockedPanel() {
+  const fin = useFinancial();
+  return (
+    <section className="panel financial-locked-panel">
+      <span className="empty-icon"><Lock size={20} /></span>
+      <strong>Financial Information Protected</strong>
+      <p>Profit reports and exports need your 4-digit security PIN.</p>
+      <button className="button primary" type="button" onClick={() => fin.ensureUnlocked()}>
+        <KeyRound size={16} /> Enter PIN
+      </button>
+    </section>
+  );
+}
+
+function SecurityPage({ notify }) {
+  const fin = useFinancial();
+  const [setupForm, setSetupForm] = useState({ password: "", pin: "", confirmPin: "" });
+  const [changeForm, setChangeForm] = useState({ currentPin: "", newPin: "", confirmPin: "" });
+  const [resetForm, setResetForm] = useState({ password: "", recoveryKey: "", newPin: "", confirmPin: "" });
+  const [showReset, setShowReset] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function run(action) {
+    setBusy(true);
+    setError("");
+    try {
+      await action();
+    } catch (requestError) {
+      setError(requestError.status === 429 ? "Too many incorrect attempts. Try again later." : requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const setPin = (event) => {
+    event.preventDefault();
+    if (setupForm.pin !== setupForm.confirmPin) return setError("The two PINs do not match.");
+    run(async () => {
+      const result = await api("/financial/pin", { method: "POST", body: JSON.stringify(setupForm) });
+      setSetupForm({ password: "", pin: "", confirmPin: "" });
+      fin.markUnlocked(result.expiresAt);
+      notify("Financial PIN set. Financial information is now protected.");
+    });
+  };
+  const changePin = (event) => {
+    event.preventDefault();
+    if (changeForm.newPin !== changeForm.confirmPin) return setError("The two new PINs do not match.");
+    run(async () => {
+      await api("/financial/pin", { method: "PUT", body: JSON.stringify(changeForm) });
+      setChangeForm({ currentPin: "", newPin: "", confirmPin: "" });
+      await fin.refresh();
+      notify("Financial PIN changed.");
+    });
+  };
+  const resetPin = (event) => {
+    event.preventDefault();
+    if (resetForm.newPin !== resetForm.confirmPin) return setError("The two new PINs do not match.");
+    run(async () => {
+      await api("/financial/pin/reset", { method: "POST", body: JSON.stringify(resetForm) });
+      setResetForm({ password: "", recoveryKey: "", newPin: "", confirmPin: "" });
+      setShowReset(false);
+      await fin.refresh();
+      notify("Financial PIN reset.");
+    });
+  };
+  const state = !fin.pinEnabled ? "off" : fin.unlocked ? "unlocked" : "locked";
+  const StatusIcon = state === "unlocked" ? LockOpen : state === "locked" ? Lock : ShieldCheck;
+  return (
+    <div className="security-page">
+      <Heading
+        eyebrow="PRIVACY SETTINGS"
+        title="Financial security"
+        subtitle="Protect purchase prices and profit with a 4-digit PIN."
+      />
+      {error && <Notice message={error} />}
+      <section className={`panel security-status ${state}`}>
+        <span className="security-status-icon"><StatusIcon size={20} /></span>
+        <div className="security-status-copy">
+          <span className="section-kicker">STATUS</span>
+          <h2>{fin.pinEnabled ? "PIN protection is on" : "PIN protection is off"}</h2>
+          <p className="security-text">
+            {state === "unlocked"
+              ? "Financial information is unlocked. It locks automatically after 5 minutes."
+              : state === "locked"
+                ? "Purchase prices, costs and profit are hidden until the PIN is entered."
+                : "Anyone using this login can see purchase prices and profit. Set a PIN to protect them."}
+          </p>
+        </div>
+        {fin.pinEnabled && (
+          <div className="security-status-action">
+            {fin.unlocked ? (
+              <button className="button outline" type="button" onClick={() => fin.lock()}>
+                <Lock size={16} /> Lock now
+              </button>
+            ) : (
+              <button className="button primary" type="button" onClick={() => fin.ensureUnlocked()}>
+                <LockOpen size={16} /> Unlock
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+
+      {!fin.pinEnabled ? (
+        <div className="security-grid single">
+          <section className="panel security-card">
+            <PanelTitle kicker="SET UP" title="Set your financial PIN" />
+            <p className="security-text">Your account password is required, so only the owner can turn this on.</p>
+            <form className="security-form" onSubmit={setPin}>
+              <Field label="Account password" type="password" autoComplete="current-password" value={setupForm.password} onChange={(password) => setSetupForm({ ...setupForm, password })} required />
+              <div className="pin-pair">
+                <PinInput label="New 4-digit PIN" value={setupForm.pin} onChange={(pin) => setSetupForm({ ...setupForm, pin })} />
+                <PinInput label="Confirm PIN" value={setupForm.confirmPin} onChange={(confirmPin) => setSetupForm({ ...setupForm, confirmPin })} />
+              </div>
+              <div className="security-actions">
+                <button className="button primary" disabled={busy}>Set PIN</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : (
+        <div className="security-grid">
+          <section className="panel security-card">
+            <PanelTitle kicker="CHANGE" title="Change PIN" />
+            <p className="security-text">Enter your current PIN, then choose a new one. Financial information locks again afterwards.</p>
+            <form className="security-form" onSubmit={changePin}>
+              <PinInput label="Current PIN" value={changeForm.currentPin} onChange={(currentPin) => setChangeForm({ ...changeForm, currentPin })} />
+              <div className="pin-pair">
+                <PinInput label="New PIN" value={changeForm.newPin} onChange={(newPin) => setChangeForm({ ...changeForm, newPin })} />
+                <PinInput label="Confirm new PIN" value={changeForm.confirmPin} onChange={(confirmPin) => setChangeForm({ ...changeForm, confirmPin })} />
+              </div>
+              <div className="security-actions">
+                <button className="button primary" disabled={busy}>Change PIN</button>
+              </div>
+            </form>
+          </section>
+          <section className="panel security-card">
+            <PanelTitle
+              kicker="RECOVERY"
+              title="Forgot your PIN?"
+              right={
+                <button className="text-button" type="button" aria-expanded={showReset} onClick={() => setShowReset(!showReset)}>
+                  {showReset ? "Hide" : "Reset PIN"}
+                </button>
+              }
+            />
+            <p className="security-text">Reset needs your account password and the recovery key held on the server (FINANCIAL_PIN_RECOVERY_KEY).</p>
+            {showReset && (
+              <form className="security-form" onSubmit={resetPin}>
+                <Field label="Account password" type="password" autoComplete="current-password" value={resetForm.password} onChange={(password) => setResetForm({ ...resetForm, password })} required />
+                <Field label="Recovery key" type="password" autoComplete="off" value={resetForm.recoveryKey} onChange={(recoveryKey) => setResetForm({ ...resetForm, recoveryKey })} required />
+                <div className="pin-pair">
+                  <PinInput label="New PIN" value={resetForm.newPin} onChange={(newPin) => setResetForm({ ...resetForm, newPin })} />
+                  <PinInput label="Confirm new PIN" value={resetForm.confirmPin} onChange={(confirmPin) => setResetForm({ ...resetForm, confirmPin })} />
+                </div>
+                <div className="security-actions">
+                  <button className="button outline" disabled={busy}>Reset PIN</button>
+                </div>
+              </form>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------- Purchase invoices (stock inward) ----------------
+const INVOICE_MAX_MB = 8;
+const invoiceStatusClass = (status) => (status === "Completed" ? "completed" : status === "Pending" ? "pending" : "partial");
+function InvoiceStatus({ status }) {
+  return <span className={`invoice-status ${invoiceStatusClass(status)}`}><i />{status}</span>;
+}
+function QuantityBar({ invoice }) {
+  const pct = invoice.totalQuantity ? Math.round((invoice.addedQuantity / invoice.totalQuantity) * 100) : 0;
+  return (
+    <div className="qty-bar" title={`${invoice.addedQuantity} of ${invoice.totalQuantity} added`}>
+      <span style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+const invoiceOptionLabel = (invoice) =>
+  `${invoice.invoiceNumber} | ${invoice.dealerName} | ${date(invoice.invoiceDate)} | ${invoice.remainingQuantity} Remaining`;
+
+/** Opens or downloads the attachment. It shows prices, so the server requires the PIN when one is set. */
+async function openInvoiceAttachment(fin, invoice, download) {
+  if (!(await fin.ensureUnlocked())) return;
+  const popup = download ? null : window.open("", "_blank");
+  try {
+    const response = await fetch(`${apiBase}/purchase-invoices/${invoice._id}/attachment${download ? "?download=1" : ""}`, {
+      credentials: "include",
+      headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {},
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.message || "Could not open the invoice file.");
+    }
+    const url = URL.createObjectURL(await response.blob());
+    if (download) {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = invoice.attachment?.originalName || `${invoice.invoiceNumber}.pdf`;
+      link.click();
+    } else if (popup) popup.location.href = url;
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (error) {
+    popup?.close();
+    window.alert(error.message);
+  }
+}
+
+function InvoicesPage() {
+  const fin = useFinancial();
+  const [filters, setFilters] = useState({ search: "", dealer: "", from: "", to: "", status: "" });
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState(null);
+  const [dealers, setDealers] = useState([]);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api("/dealers").then(({ items }) => setDealers(items)).catch(() => {});
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const params = new URLSearchParams({ ...filters, page: String(page), limit: "20" });
+    const timer = window.setTimeout(() => {
+      api(`/purchase-invoices?${params}`)
+        .then((result) => active && (setData(result), setError("")))
+        .catch((requestError) => active && setError(requestError.message));
+    }, 200);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [filters, page, fin.version]);
+  const setFilter = (key, value) => { setFilters((current) => ({ ...current, [key]: value })); setPage(1); };
+  return (
+    <>
+      <Heading
+        eyebrow="STOCK INWARD"
+        title="Purchase invoices"
+        subtitle="Create the dealer invoice first, then add each phone against it."
+        right={<NavLink to="/invoices/new" className="button primary"><Plus size={17} />New invoice</NavLink>}
+      />
+      {data?.financialLocked && <FinancialLockedBanner />}
+      <div className="invoice-filters">
+        <div className="search-box">
+          <Search size={17} />
+          <input placeholder="Search invoice number" value={filters.search} onChange={(event) => setFilter("search", event.target.value)} aria-label="Search invoice number" />
+        </div>
+        <label>Dealer<select value={filters.dealer} onChange={(event) => setFilter("dealer", event.target.value)}><option value="">All dealers</option>{dealers.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}</select></label>
+        <label>Status<select value={filters.status} onChange={(event) => setFilter("status", event.target.value)}><option value="">All</option><option value="pending">Pending</option><option value="partial">Partially added</option><option value="completed">Completed</option></select></label>
+        <label>From<input type="date" value={filters.from} onChange={(event) => setFilter("from", event.target.value)} /></label>
+        <label>To<input type="date" value={filters.to} onChange={(event) => setFilter("to", event.target.value)} /></label>
+      </div>
+      {error ? <Notice message={error} /> : !data ? <Loading /> : (
+        <section className="panel table-panel">
+          <div className="table-scroll">
+            <table className="invoice-table">
+              <thead>
+                <tr>
+                  <th>Invoice</th><th>Dealer</th><th>Date</th><th>Total amount</th><th>Quantity</th><th>Added</th><th>Remaining</th><th>File</th><th>Status</th><th />
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((invoice) => (
+                  <tr key={invoice._id}>
+                    <td><NavLink className="invoice-link" to={`/invoices/${invoice._id}`}>{invoice.invoiceNumber}</NavLink>{invoice.brand && <small>{invoice.brand}</small>}</td>
+                    <td>{invoice.dealerName}</td>
+                    <td>{date(invoice.invoiceDate)}</td>
+                    <td className="table-amount">{money(invoice.totalPurchaseAmount)}</td>
+                    <td>{invoice.totalQuantity}</td>
+                    <td>{invoice.addedQuantity}<QuantityBar invoice={invoice} /></td>
+                    <td><strong>{invoice.remainingQuantity}</strong></td>
+                    <td>{invoice.attachment ? <Paperclip size={16} aria-label="Has attachment" /> : "—"}</td>
+                    <td><InvoiceStatus status={invoice.status} /></td>
+                    <td><NavLink className="icon-button" to={`/invoices/${invoice._id}`} title="View invoice" aria-label={`View invoice ${invoice.invoiceNumber}`}><Eye size={17} /></NavLink></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!data.items.length && (
+              <Empty
+                icon={FileText}
+                title={Object.values(filters).some(Boolean) ? "No matching invoices" : "No purchase invoices yet"}
+                description={Object.values(filters).some(Boolean) ? "Try another invoice number, dealer or date." : "Create an invoice when stock arrives, then add phones to it."}
+                action={<NavLink to="/invoices/new" className="button primary"><Plus size={16} />New invoice</NavLink>}
+              />
+            )}
+          </div>
+          <Pagination page={page} pages={data.pages} onPage={setPage} />
+        </section>
+      )}
+    </>
+  );
+}
+
+function InvoiceFormPage({ notify }) {
+  const { id } = useParams();
+  const editing = Boolean(id);
+  const fin = useFinancial();
+  const navigate = useNavigate();
+  const [dealers, setDealers] = useState([]);
+  const [form, setForm] = useState({ dealer: "", invoiceNumber: "", invoiceDate: new Date().toISOString().slice(0, 10), totalPurchaseAmount: "", totalQuantity: "", brand: "", notes: "" });
+  const [original, setOriginal] = useState(null);
+  const [file, setFile] = useState(null);
+  const [removeAttachment, setRemoveAttachment] = useState(false);
+  const [newDealer, setNewDealer] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const loadDealers = () => api("/dealers").then(({ items }) => setDealers(items)).catch(() => {});
+  useEffect(() => { loadDealers(); }, []);
+  useEffect(() => {
+    if (!editing) return;
+    api(`/purchase-invoices/${id}`).then(({ invoice }) => {
+      setOriginal(invoice);
+      setForm({
+        dealer: invoice.dealer, invoiceNumber: invoice.invoiceNumber, invoiceDate: String(invoice.invoiceDate).slice(0, 10),
+        totalPurchaseAmount: invoice.totalPurchaseAmount ?? "", totalQuantity: String(invoice.totalQuantity), brand: invoice.brand || "", notes: invoice.notes || "",
+      });
+    }).catch((requestError) => setError(requestError.message));
+  }, [editing, id, fin.version]);
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const amountLocked = form.totalPurchaseAmount === null || (editing && original?.totalPurchaseAmount === null);
+  function pickFile(selected) {
+    setError("");
+    if (!selected) return setFile(null);
+    if (!/\.(pdf|jpe?g|png)$/i.test(selected.name)) return setError("Only PDF, JPG, JPEG and PNG files are allowed.");
+    if (selected.size > INVOICE_MAX_MB * 1024 * 1024) return setError(`The invoice file must be ${INVOICE_MAX_MB} MB or smaller.`);
+    setFile(selected);
+    setRemoveAttachment(false);
+  }
+  async function addDealer(event) {
+    event.preventDefault();
+    try {
+      const { dealer } = await api("/dealers", { method: "POST", body: JSON.stringify(newDealer) });
+      await loadDealers();
+      update("dealer", dealer._id);
+      setNewDealer(null);
+      notify("Dealer added.");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+  async function submit(event) {
+    event.preventDefault();
+    setError("");
+    const amountChanged = !editing || String(form.totalPurchaseAmount) !== String(original?.totalPurchaseAmount ?? "");
+    // Entering or changing the invoice amount, or its attachment, is protected by the Financial PIN.
+    if ((amountChanged || file || removeAttachment) && !(await fin.ensureUnlocked())) {
+      setError("Unlock financial information with your PIN to save the invoice amount or file.");
+      return;
+    }
+    if (amountLocked && amountChanged) {
+      setError("Reload the page after unlocking to edit the amount.");
+      return;
+    }
+    const body = new FormData();
+    for (const key of ["dealer", "invoiceNumber", "invoiceDate", "totalQuantity", "brand", "notes"]) body.append(key, form[key]);
+    if (amountChanged) body.append("totalPurchaseAmount", form.totalPurchaseAmount);
+    if (file) body.append("invoiceFile", file);
+    if (removeAttachment) body.append("removeAttachment", "true");
+    setBusy(true);
+    try {
+      const { invoice } = await api(editing ? `/purchase-invoices/${id}` : "/purchase-invoices", { method: editing ? "PUT" : "POST", body });
+      notify(editing ? "Invoice updated." : `Invoice ${invoice.invoiceNumber} created. Now add the phones.`);
+      navigate(`/invoices/${invoice._id}`);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const lockedDealer = editing && original?.addedQuantity > 0;
+  return (
+    <>
+      <Heading
+        eyebrow="STOCK INWARD"
+        title={editing ? `Edit invoice ${original?.invoiceNumber || ""}` : "New purchase invoice"}
+        subtitle={editing ? "Quantities already added stay linked to this invoice." : "Record the dealer invoice once; phones are added against it later."}
+        right={<NavLink className="back-link" to={editing ? `/invoices/${id}` : "/invoices"}><ArrowLeft size={16} />{editing ? "Invoice" : "Invoices"}</NavLink>}
+      />
+      {error && <Notice message={error} />}
+      <form className="invoice-form-layout" onSubmit={submit}>
+        <section className="panel form-panel">
+          <FormSection number="01" title="Dealer" description="Pick the supplier this invoice came from." />
+          <div className="field-grid">
+            <label className="field">
+              <span>Dealer</span>
+              <select value={form.dealer} onChange={(event) => update("dealer", event.target.value)} required disabled={lockedDealer}>
+                <option value="">Choose a dealer</option>
+                {dealers.map((dealer) => <option key={dealer._id} value={dealer._id}>{dealer.name}</option>)}
+              </select>
+              {lockedDealer && <small className="field-hint">The dealer cannot change after phones are added.</small>}
+            </label>
+            {!lockedDealer && (
+              <div className="field add-dealer-cell">
+                <span>Not listed?</span>
+                <button type="button" className="button outline" onClick={() => setNewDealer(newDealer ? null : { name: "", phone: "", address: "" })}>
+                  <Plus size={16} />{newDealer ? "Cancel new dealer" : "Add new dealer"}
+                </button>
+              </div>
+            )}
+          </div>
+          {newDealer && (
+            <div className="inline-dealer">
+              <Field label="Dealer name" value={newDealer.name} onChange={(name) => setNewDealer({ ...newDealer, name })} />
+              <Field label="Phone" value={newDealer.phone} onChange={(phone) => setNewDealer({ ...newDealer, phone })} placeholder="Optional" />
+              <button type="button" className="button primary" onClick={addDealer} disabled={newDealer.name.trim().length < 2}>Save dealer</button>
+            </div>
+          )}
+        </section>
+        <section className="panel form-panel">
+          <FormSection number="02" title="Invoice details" description="As printed on the dealer's invoice." />
+          <div className="field-grid">
+            <Field label="Invoice number" value={form.invoiceNumber} onChange={(value) => update("invoiceNumber", value)} required maxLength={80} placeholder="e.g. INV-1025" />
+            <Field label="Invoice date" type="date" value={form.invoiceDate} onChange={(value) => update("invoiceDate", value)} required />
+            <Field
+              label={amountLocked ? "Total purchase amount (locked)" : fin.locked ? "Total purchase amount (PIN needed to save)" : "Total purchase amount"}
+              type={amountLocked ? "text" : "number"}
+              value={amountLocked ? "₹ ••••" : form.totalPurchaseAmount}
+              onChange={(value) => update("totalPurchaseAmount", value)}
+              required={!editing}
+              disabled={amountLocked}
+              min="0"
+              step="0.01"
+              placeholder="0.00"
+            />
+            <Field
+              label="Total quantity (phones)"
+              type="number"
+              value={form.totalQuantity}
+              onChange={(value) => update("totalQuantity", value)}
+              required
+              min={Math.max(1, original?.addedQuantity || 0)}
+              step="1"
+              placeholder="e.g. 20"
+            />
+            <Field label="Brand / category" value={form.brand} onChange={(value) => update("brand", value)} placeholder="Optional" maxLength={80} />
+            <label className="field field-wide">
+              <span>Notes</span>
+              <textarea rows={3} value={form.notes} onChange={(event) => update("notes", event.target.value)} maxLength={1000} placeholder="Optional" />
+            </label>
+          </div>
+          {editing && original?.addedQuantity > 0 && <p className="field-hint">{original.addedQuantity} phones are already added, so the quantity cannot go below {original.addedQuantity}.</p>}
+        </section>
+        <section className="panel form-panel">
+          <FormSection number="03" title="Invoice file" description={`Original PDF or photo (PDF, JPG, PNG, up to ${INVOICE_MAX_MB} MB).`} />
+          <label className="file-drop">
+            <Upload size={20} />
+            <span>{file ? file.name : original?.attachment && !removeAttachment ? `Current: ${original.attachment.originalName}. Choose a file to replace it.` : "Choose a file"}</span>
+            <input type="file" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png" onChange={(event) => pickFile(event.target.files?.[0])} />
+          </label>
+          {editing && original?.attachment && !file && (
+            <label className="checkbox-line"><input type="checkbox" checked={removeAttachment} onChange={(event) => setRemoveAttachment(event.target.checked)} />Remove the current file</label>
+          )}
+        </section>
+        <div className="invoice-form-actions">
+          <NavLink className="button outline" to={editing ? `/invoices/${id}` : "/invoices"}>Cancel</NavLink>
+          <button className="button primary" disabled={busy}>{busy ? "Saving…" : editing ? "Save changes" : "Create invoice"}</button>
+        </div>
+      </form>
+    </>
+  );
+}
+
+function InvoiceDetailPage({ notify }) {
+  const { id } = useParams();
+  const fin = useFinancial();
+  const navigate = useNavigate();
+  const [data, setData] = useState(null);
+  const [stock, setStock] = useState(null);
+  const [page, setPage] = useState(1);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api(`/purchase-invoices/${id}`).then(setData).catch((requestError) => setError(requestError.message));
+  }, [id, fin.version]);
+  useEffect(() => {
+    api(`/purchase-invoices/${id}/stock?page=${page}&limit=20`).then(setStock).catch(() => {});
+  }, [id, page, fin.version]);
+  async function remove() {
+    if (!window.confirm(`Delete invoice ${data.invoice.invoiceNumber}? This cannot be undone.`)) return;
+    try {
+      await api(`/purchase-invoices/${id}`, { method: "DELETE" });
+      notify("Invoice deleted.");
+      navigate("/invoices");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+  if (error && !data) return <Notice message={error} />;
+  if (!data) return <Loading />;
+  const { invoice, dealer, linkedStock } = data;
+  return (
+    <>
+      <Heading
+        eyebrow="PURCHASE INVOICE"
+        title={invoice.invoiceNumber}
+        subtitle={`${invoice.dealerName} · ${date(invoice.invoiceDate)}`}
+        right={<NavLink className="back-link" to="/invoices"><ArrowLeft size={16} />Invoices</NavLink>}
+      />
+      {error && <Notice message={error} />}
+      {data.financialLocked && <FinancialLockedBanner />}
+      <section className="panel invoice-summary">
+        <div className="invoice-summary-top">
+          <InvoiceStatus status={invoice.status} />
+          <div className="invoice-actions">
+            {invoice.remainingQuantity > 0 && (
+              <NavLink className="button primary" to={`/purchases?invoice=${invoice._id}`}><PackagePlus size={16} />Add phones</NavLink>
+            )}
+            <NavLink className="button outline" to={`/invoices/${invoice._id}/edit`}><Pencil size={16} />Edit</NavLink>
+            {invoice.addedQuantity === 0 && <button type="button" className="button outline danger" onClick={remove}><Trash2 size={16} />Delete</button>}
+          </div>
+        </div>
+        <div className="invoice-qty">
+          <div><span>Invoice quantity</span><strong>{invoice.totalQuantity}</strong></div>
+          <div><span>Added to inventory</span><strong>{invoice.addedQuantity}</strong></div>
+          <div><span>Remaining</span><strong className={invoice.remainingQuantity ? "" : "done"}>{invoice.remainingQuantity}</strong></div>
+        </div>
+        <QuantityBar invoice={invoice} />
+        <div className="invoice-facts">
+          <Detail label="Dealer" value={dealer?.name || invoice.dealerName} />
+          <Detail label="Dealer phone" value={dealer?.phone} />
+          <Detail label="Invoice date" value={date(invoice.invoiceDate)} />
+          <Detail label="Brand / category" value={invoice.brand} />
+          <Detail label="Total purchase amount" value={money(invoice.totalPurchaseAmount)} />
+          <Detail label="Sum of phone purchase prices" value={money(data.linkedPurchaseTotal)} />
+          <Detail label="In stock / sold" value={`${linkedStock.inStock} / ${linkedStock.sold}`} />
+          <Detail label="Notes" value={invoice.notes} />
+        </div>
+        <div className="invoice-file-row">
+          <Paperclip size={16} />
+          {invoice.attachment ? (
+            <>
+              <span className="invoice-file-name">{invoice.attachment.originalName} <small>{Math.max(1, Math.round(invoice.attachment.size / 1024))} KB</small></span>
+              <button type="button" className="button outline" onClick={() => openInvoiceAttachment(fin, invoice, false)}><Eye size={16} />View</button>
+              <button type="button" className="button outline" onClick={() => openInvoiceAttachment(fin, invoice, true)}><Download size={16} />Download</button>
+            </>
+          ) : <span className="invoice-file-name">No file uploaded. <NavLink to={`/invoices/${invoice._id}/edit`}>Upload one</NavLink></span>}
+        </div>
+      </section>
+      <section className="panel table-panel">
+        <div className="report-table-heading"><PanelTitle kicker="LINKED STOCK" title={`Phones on this invoice (${stock?.total ?? invoice.addedQuantity})`} /></div>
+        <div className="table-scroll">
+          <table>
+            <thead><tr><th>Brand</th><th>Device</th><th>Model number</th><th>IMEI</th><th>Purchase price</th><th>Stock entry</th><th>Status</th></tr></thead>
+            <tbody>
+              {(stock?.items || []).map((item) => (
+                <tr key={item._id}>
+                  <td>{item.brand}</td>
+                  <td><strong>{item.model}</strong></td>
+                  <td>{item.modelNumber || "—"}</td>
+                  <td className="imei-text">{masked(item.imei1)}</td>
+                  <td className="table-amount">{money(item.purchasePrice)}</td>
+                  <td>{dateTime(item.createdAt)}</td>
+                  <td><Badge status={item.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {stock && !stock.items.length && <Empty icon={PackagePlus} title="No phones added yet" description="Use Add phones to scan each phone against this invoice." />}
+        </div>
+        {stock && <Pagination page={page} pages={stock.pages} onPage={setPage} />}
+      </section>
+    </>
+  );
+}
+
+/** Searchable invoice picker for Add Stock. Lists only invoices with remaining quantity. */
+function InvoicePicker({ selected, onSelect }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    if (!open) return undefined;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      api(`/purchase-invoices/available-for-stock?search=${encodeURIComponent(query)}`)
+        .then((result) => active && setItems(result.items))
+        .catch(() => active && setItems([]));
+    }, 180);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [query, open]);
+  if (selected) {
+    return (
+      <div className="invoice-picked">
+        <div>
+          <span className="section-kicker">PURCHASE INVOICE</span>
+          <strong>{selected.invoiceNumber}</strong>
+          <span>{selected.dealerName} · {date(selected.invoiceDate)}</span>
+        </div>
+        <span className={`invoice-remaining ${selected.remainingQuantity ? "" : "done"}`}>{selected.remainingQuantity} of {selected.totalQuantity} remaining</span>
+        <button type="button" className="button outline" onClick={() => onSelect(null)}>Change</button>
+      </div>
+    );
+  }
+  return (
+    <div className="invoice-picker" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
+      <label className="field">
+        <span>Select purchase invoice</span>
+        <input
+          role="combobox"
+          aria-expanded={open}
+          aria-controls="invoice-picker-list"
+          value={query}
+          onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          placeholder="Search invoice number…"
+        />
+      </label>
+      {open && (
+        <div className="invoice-options" id="invoice-picker-list" role="listbox">
+          {items.map((invoice) => (
+            <button type="button" role="option" aria-selected="false" key={invoice._id} className="invoice-option" title={invoiceOptionLabel(invoice)} onClick={() => { onSelect(invoice); setOpen(false); setQuery(""); }}>
+              <strong>{invoice.invoiceNumber}</strong>
+              <span>{invoice.dealerName} · {date(invoice.invoiceDate)}</span>
+              <span className="invoice-remaining">{invoice.remainingQuantity} Remaining</span>
+            </button>
+          ))}
+          {!items.length && <span className="invoice-option-empty">No open invoices{query ? ` matching "${query}"` : ""}.</span>}
+          <NavLink className="invoice-option create" to="/invoices/new"><Plus size={15} />Create a new purchase invoice</NavLink>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -604,13 +1454,14 @@ function Heading({ eyebrow, title, subtitle, right }) {
 }
 
 function Dashboard() {
+  const fin = useFinancial();
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   useEffect(() => {
     api("/dashboard")
       .then(setData)
       .catch((requestError) => setError(requestError.message));
-  }, []);
+  }, [fin.version]);
   if (error) return <Notice message={error} />;
   if (!data) return <Loading />;
   const { metrics, charts, recent } = data;
@@ -636,6 +1487,7 @@ function Dashboard() {
           </span>
         }
       />
+      {data.financialLocked && <FinancialLockedBanner />}
       <section className="metric-grid">
         <Metric
           label="Available mobiles"
@@ -663,7 +1515,7 @@ function Dashboard() {
           value={money(metrics.netProfit)}
           icon={TrendingUp}
           color="rose"
-          note={`${money(metrics.grossProfit)} gross profit`}
+          note={metrics.grossProfit === null ? "Locked" : `${money(metrics.grossProfit)} gross profit`}
         />
       </section>
       <section className="metric-strip">
@@ -906,6 +1758,8 @@ function PanelTitle({ kicker, title, right }) {
 }
 
 function InventoryPage({ notify }) {
+  const fin = useFinancial();
+  const [locked, setLocked] = useState(false);
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState({ ram: "", storage: "", from: "", to: "", sort: "newest" });
   const [items, setItems] = useState([]);
@@ -925,6 +1779,7 @@ function InventoryPage({ notify }) {
             setItems(result.items);
             setPages(result.pages);
             setTotal(result.total);
+            setLocked(Boolean(result.financialLocked));
           })
           .catch((requestError) => active && setError(requestError.message))
           .finally(() => active && setLoading(false)),
@@ -934,11 +1789,13 @@ function InventoryPage({ notify }) {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [search, filters, page]);
+  }, [search, filters, page, fin.version]);
   async function updatePrice(item) {
+    if (!(await fin.ensureUnlocked())) return;
+    const current = await api(`/inventory/${item._id}`).catch(() => null);
     const value = window.prompt(
       "Update purchase price",
-      String(item.purchasePrice),
+      String(current?.item?.purchasePrice ?? ""),
     );
     if (value === null) return;
     const price = Number(value);
@@ -989,6 +1846,7 @@ function InventoryPage({ notify }) {
           {loading ? "Loading…" : `${total} in stock`}
         </span>
       </div>
+      {locked && <FinancialLockedBanner />}
       <div className="inventory-filters">
         <span><Filter size={15} />Filter & sort</span>
         <label>RAM<input value={filters.ram} onChange={(event) => { setFilters({ ...filters, ram: event.target.value }); setPage(1); setLoading(true); }} placeholder="Any" /></label>
@@ -1131,9 +1989,20 @@ const emptyDevice = () => ({
 });
 
 function StockPage({ notify }) {
+  const fin = useFinancial();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [dealers, setDealers] = useState([]);
   const [form, setForm] = useState(emptyDevice);
+  // Selected purchase invoice: the source of truth for dealer, invoice number and date.
+  const [invoice, setInvoice] = useState(null);
+  const invoiceParam = searchParams.get("invoice");
+  useEffect(() => {
+    if (!invoiceParam) return;
+    api(`/purchase-invoices/${invoiceParam}`)
+      .then(({ invoice: found }) => found.remainingQuantity > 0 && setInvoice(found))
+      .catch(() => {});
+  }, [invoiceParam]);
   const [busy, setBusy] = useState(false);
   const [lookupBusy, setLookupBusy] = useState(false);
   const [scanner, setScanner] = useState(false);
@@ -1222,8 +2091,13 @@ function StockPage({ notify }) {
   }
   async function submit(event) {
     event.preventDefault();
-    setBusy(true);
     setError("");
+    // Entering a dealer purchase price is protected; the API enforces this too.
+    if (!(await fin.ensureUnlocked())) {
+      setError("Unlock financial information with your PIN to save the purchase price.");
+      return;
+    }
+    setBusy(true);
     try {
       const duplicateChecks = await Promise.all(
         [form.imei1, form.imei2].filter(Boolean).map((imei) =>
@@ -1233,15 +2107,30 @@ function StockPage({ notify }) {
       if (duplicateChecks.some((check) => check.exists)) {
         throw new Error("This IMEI is already recorded in inventory.");
       }
+      const payload = invoice
+        ? { ...form, dealer: "", dealerName: "", invoiceNumber: "", purchaseDate: undefined, purchaseInvoiceId: invoice._id }
+        : { ...form };
       await api("/inventory", {
         method: "POST",
-        body: JSON.stringify({
-          ...form,
-          purchasePrice: Number(form.purchasePrice),
-        }),
+        body: JSON.stringify({ ...payload, purchasePrice: Number(form.purchasePrice) }),
       });
-      notify("Mobile added to stock.");
-      navigate("/inventory");
+      if (!invoice) {
+        notify("Mobile added to stock.");
+        navigate("/inventory");
+        return;
+      }
+      // Invoice workflow: stay here with the invoice selected so the next phone can be scanned.
+      const { invoice: refreshed } = await api(`/purchase-invoices/${invoice._id}`);
+      if (refreshed.remainingQuantity <= 0) {
+        notify(`Invoice ${refreshed.invoiceNumber} is complete: all ${refreshed.totalQuantity} phones added.`);
+        navigate(`/invoices/${refreshed._id}`);
+        return;
+      }
+      setInvoice(refreshed);
+      setForm((current) => ({ ...emptyDevice(), purchasePrice: current.purchasePrice }));
+      setLookupNote("");
+      setLookupSuccess(false);
+      notify(`Added to ${refreshed.invoiceNumber}: ${refreshed.addedQuantity} of ${refreshed.totalQuantity}. Scan the next phone.`);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -1367,44 +2256,55 @@ function StockPage({ notify }) {
             <FormSection
               number="02"
               title="Purchase details"
-              description="Link the dealer and enter the actual acquisition cost."
+              description="Pick the purchase invoice; dealer, invoice number and date come from it."
             />
+            <InvoicePicker selected={invoice} onSelect={setInvoice} />
             <div className="field-grid">
-              <label className="field">
-                <span>Dealer</span>
-                <select
-                  value={form.dealer}
-                  onChange={(event) => update("dealer", event.target.value)}
-                >
-                  <option value="">Choose a dealer</option>
-                  {dealers.map((dealer) => (
-                    <option key={dealer._id} value={dealer._id}>
-                      {dealer.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {invoice ? (
+                <>
+                  <Field label="Dealer (from invoice)" value={invoice.dealerName} onChange={() => {}} readOnly aria-readonly="true" className="readonly" />
+                  <Field label="Invoice number (from invoice)" value={invoice.invoiceNumber} onChange={() => {}} readOnly aria-readonly="true" />
+                  <Field label="Invoice date (read-only)" type="date" value={String(invoice.invoiceDate).slice(0, 10)} onChange={() => {}} readOnly aria-readonly="true" />
+                </>
+              ) : (
+                <>
+                  <label className="field">
+                    <span>Dealer</span>
+                    <select
+                      value={form.dealer}
+                      onChange={(event) => update("dealer", event.target.value)}
+                    >
+                      <option value="">Choose a dealer</option>
+                      {dealers.map((dealer) => (
+                        <option key={dealer._id} value={dealer._id}>
+                          {dealer.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Field
+                    label="Dealer name (manual)"
+                    value={form.dealerName}
+                    onChange={(value) => update("dealerName", value)}
+                    placeholder="When dealer is not listed"
+                  />
+                  <Field
+                    label="Invoice number"
+                    value={form.invoiceNumber}
+                    onChange={(value) => update("invoiceNumber", value)}
+                    placeholder="Optional"
+                  />
+                  <Field
+                    label="Purchase date"
+                    type="date"
+                    value={form.purchaseDate}
+                    onChange={(value) => update("purchaseDate", value)}
+                    required
+                  />
+                </>
+              )}
               <Field
-                label="Dealer name (manual)"
-                value={form.dealerName}
-                onChange={(value) => update("dealerName", value)}
-                placeholder="When dealer is not listed"
-              />
-              <Field
-                label="Invoice number"
-                value={form.invoiceNumber}
-                onChange={(value) => update("invoiceNumber", value)}
-                placeholder="Optional"
-              />
-              <Field
-                label="Purchase date"
-                type="date"
-                value={form.purchaseDate}
-                onChange={(value) => update("purchaseDate", value)}
-                required
-              />
-              <Field
-                label="Dealer purchase price"
+                label={fin.locked ? "Dealer purchase price (PIN needed to save)" : "Dealer purchase price"}
                 type="number"
                 value={form.purchasePrice}
                 onChange={(value) => update("purchasePrice", value)}
@@ -1430,6 +2330,12 @@ function StockPage({ notify }) {
               <span>IMEI</span>
               <strong>{form.imei1 ? masked(form.imei1) : "Not entered"}</strong>
             </div>
+            {invoice && (
+              <div className="summary-line">
+                <span>Invoice</span>
+                <strong>{invoice.invoiceNumber} · {invoice.remainingQuantity} left</strong>
+              </div>
+            )}
             <div className="summary-line">
               <span>Purchase cost</span>
               <strong>
@@ -1488,7 +2394,11 @@ function FormSection({ number, title, description }) {
 }
 
 function SellPage({ notify }) {
+  const fin = useFinancial();
   const [imei, setImei] = useState("");
+  const [lastSix, setLastSix] = useState("");
+  const [matches, setMatches] = useState(null);
+  const [searching, setSearching] = useState(false);
   const [device, setDevice] = useState(null);
   const [scanner, setScanner] = useState(false);
   const [form, setForm] = useState({
@@ -1500,9 +2410,55 @@ function SellPage({ notify }) {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Loads the full stock record (purchase price is only included when unlocked).
+  async function selectDevice(item, saleImei) {
+    setError("");
+    try {
+      const result = await api(`/inventory/${item._id}`);
+      if (result.item.status !== "IN_STOCK")
+        return setError("This mobile is no longer available to sell.");
+      setDevice({ ...result.item, saleImei });
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+  async function searchLastSix(value = lastSix) {
+    setError("");
+    setDevice(null);
+    setMatches(null);
+    if (!/^\d{6}$/.test(value))
+      return setError("Enter exactly 6 digits of the IMEI.");
+    setSearching(true);
+    try {
+      const result = await api(
+        `/inventory/search-imei-last-six?digits=${encodeURIComponent(value)}`,
+      );
+      if (!result.items.length)
+        return setError(result.message || "No available phone found with these IMEI last 6 digits.");
+      setMatches(result);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSearching(false);
+    }
+  }
+  // Short debounce: search as soon as 6 digits are typed. Enter searches immediately.
+  useEffect(() => {
+    if (lastSix.length !== 6) return undefined;
+    const timer = window.setTimeout(() => searchLastSix(lastSix), 350);
+    return () => window.clearTimeout(timer);
+  }, [lastSix]);
+  // Re-read the selected phone when financial access changes so cost appears or is cleared.
+  useEffect(() => {
+    if (!device) return;
+    api(`/inventory/${device._id}`)
+      .then((result) => setDevice((current) => current && current._id === result.item._id ? { ...result.item, saleImei: current.saleImei } : current))
+      .catch(() => {});
+  }, [fin.version]);
   async function findDevice(value = imei) {
     setError("");
     setDevice(null);
+    setMatches(null);
     if (!/^\d{15}$/.test(value))
       return setError("Enter a valid 15-digit IMEI.");
     try {
@@ -1514,7 +2470,7 @@ function SellPage({ notify }) {
       );
       if (!item)
         return setError("No available mobile was found for this IMEI.");
-      setDevice(item);
+      await selectDevice(item, value);
     } catch (requestError) {
       setError(requestError.message);
     }
@@ -1524,7 +2480,7 @@ function SellPage({ notify }) {
     if (
       !device ||
       !window.confirm(
-        `Sell ${device.brand} ${device.model} for ${money(Number(form.sellingPrice))}? This cannot be undone.`,
+        `Confirm sale\n\n${device.brand} ${device.model}${device.modelNumber ? ` (${device.modelNumber})` : ""}\nIMEI ending ${(device.saleImei || device.imei1).slice(-6)}\nSelling price: ${money(Number(form.sellingPrice))}\n\nThis cannot be undone.`,
       )
     )
       return;
@@ -1533,11 +2489,13 @@ function SellPage({ notify }) {
     try {
       await api("/sales", {
         method: "POST",
-        body: JSON.stringify({ imei: device.imei1, ...form }),
+        body: JSON.stringify({ imei: device.saleImei || device.imei1, ...form }),
       });
       notify("Sale recorded and inventory updated.");
       setDevice(null);
       setImei("");
+      setLastSix("");
+      setMatches(null);
       setForm({
         sellingPrice: "",
         discount: "0",
@@ -1566,6 +2524,57 @@ function SellPage({ notify }) {
             right={<span className="step-bubble">01</span>}
           />
           <form
+            className="last-six-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              searchLastSix();
+            }}
+          >
+            <div className="sell-imei-row">
+              <Field
+                label="Search phone by IMEI last 6 digits"
+                value={lastSix}
+                onChange={(value) => {
+                  setLastSix(value.replace(/\D/g, "").slice(0, 6));
+                  setMatches(null);
+                }}
+                inputMode="numeric"
+                maxLength={6}
+                placeholder="e.g. 123456"
+                autoFocus
+              />
+              <button className="button primary" type="submit" disabled={searching}>
+                <Search size={17} />
+                {searching ? "Searching…" : "Search"}
+              </button>
+            </div>
+          </form>
+          {matches && (
+            <div className="match-list" role="list">
+              <span className="match-count">
+                {matches.items.length === 1
+                  ? "1 available phone found. Select it to continue."
+                  : `${matches.items.length} available phones end with ${matches.digits}. Select the correct one.`}
+                {matches.truncated && " Showing the first 25."}
+              </span>
+              {matches.items.map((item) => (
+                <button
+                  key={item._id}
+                  type="button"
+                  role="listitem"
+                  className={`match-item ${device?._id === item._id ? "selected" : ""}`}
+                  onClick={() => selectDevice(item, item.matchedImei)}
+                >
+                  <strong>{item.brand} {item.model}</strong>
+                  <span>{item.modelNumber || "No model number"} · {[item.ram, item.storage, item.color].filter(Boolean).join(" · ") || "—"}</span>
+                  <span className="imei-text">IMEI {masked(item.matchedImei)} · last 6 <b>{item.imeiLastSix}</b></span>
+                  <span>Invoice {item.invoiceNumber || "—"} · Dealer {item.dealerName || "—"} · <Badge status={item.status} /></span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="sell-or">or scan / enter the full IMEI</div>
+          <form
             onSubmit={(event) => {
               event.preventDefault();
               findDevice();
@@ -1581,7 +2590,6 @@ function SellPage({ notify }) {
                 inputMode="numeric"
                 maxLength={15}
                 placeholder="15-digit IMEI"
-                required
               />
               <button
                 className="button outline sell-scan"
@@ -1616,12 +2624,14 @@ function SellPage({ notify }) {
                 </div>
               </div>
               <div className="sale-device-details">
-                <Detail label="IMEI" value={masked(device.imei1)} />
+                <Detail label="IMEI" value={masked(device.saleImei || device.imei1)} />
+                <Detail label="Model number" value={device.modelNumber || "—"} />
                 <Detail
                   label="Purchase price"
                   value={money(device.purchasePrice)}
                 />
                 <Detail label="Dealer" value={device.dealerName || "—"} />
+                <Detail label="Invoice" value={device.invoiceNumber || "—"} />
                 <Detail
                   label="Purchase date"
                   value={date(device.purchaseDate)}
@@ -1634,7 +2644,7 @@ function SellPage({ notify }) {
                 <Smartphone size={25} />
               </div>
               <strong>Device details will appear here</strong>
-              <span>Scan the barcode or enter the IMEI above.</span>
+              <span>Type the last 6 IMEI digits, scan the barcode, or enter the full IMEI.</span>
             </div>
           )}
         </section>
@@ -1701,7 +2711,7 @@ function SellPage({ notify }) {
                 disabled={!device}
               />
             </div>
-            {device && (
+            {device && typeof device.purchasePrice === "number" && (
               <div className="profit-preview">
                 <span>Estimated net profit</span>
                 <strong>
@@ -1746,6 +2756,8 @@ function SellPage({ notify }) {
 }
 
 function SoldPage() {
+  const fin = useFinancial();
+  const [locked, setLocked] = useState(false);
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
   const [page, setPage] = useState(1);
@@ -1754,15 +2766,17 @@ function SoldPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   useEffect(() => {
+    setSelected(null); // drop any detail opened under a previous unlock
     api(`/sales?page=${page}&limit=20`)
       .then((result) => {
         setItems(result.items);
         setPages(result.pages);
         setTotal(result.total);
+        setLocked(Boolean(result.financialLocked));
       })
       .catch((requestError) => setError(requestError.message))
       .finally(() => setLoading(false));
-  }, [page]);
+  }, [page, fin.version]);
   return (
     <>
       <Heading
@@ -1776,6 +2790,7 @@ function SoldPage() {
           </span>
         }
       />
+      {locked && <FinancialLockedBanner />}
       {error ? (
         <Notice message={error} />
       ) : loading ? (
@@ -1907,6 +2922,8 @@ function SaleModal({ sale, onClose }) {
 }
 
 function ReportsPage() {
+  const fin = useFinancial();
+  const [locked, setLocked] = useState(false);
   const [period, setPeriod] = useState("30");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -1915,10 +2932,15 @@ function ReportsPage() {
   const [error, setError] = useState("");
   useEffect(() => {
     const params = new URLSearchParams({ ...reportDateParams(period, from, to), page: String(page), limit: "20" });
+    setData(null);
+    setError("");
     api(`/reports?${params}`)
-      .then(setData)
-      .catch((requestError) => setError(requestError.message));
-  }, [period, from, to, page]);
+      .then((result) => { setData(result); setLocked(false); })
+      .catch((requestError) => {
+        if (requestError.data?.code === "FINANCIAL_PIN_REQUIRED") setLocked(true);
+        else setError(requestError.message);
+      });
+  }, [period, from, to, page, fin.version]);
   async function exportCsv() {
     try {
       const params = new URLSearchParams(reportDateParams(period, from, to));
@@ -2014,7 +3036,9 @@ function ReportsPage() {
           </div>
         )}
       </div>
-      {error ? (
+      {locked ? (
+        <FinancialLockedPanel />
+      ) : error ? (
         <Notice message={error} />
       ) : !data ? (
         <Loading />
@@ -2238,6 +3262,7 @@ function ReportsPage() {
 }
 
 function DealersPage({ notify }) {
+  const fin = useFinancial();
   const [items, setItems] = useState([]);
   const [form, setForm] = useState({ name: "", phone: "", address: "" });
   const [error, setError] = useState("");
@@ -2262,7 +3287,7 @@ function DealersPage({ notify }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [fin.version]);
   async function submit(event) {
     event.preventDefault();
     setBusy(true);
@@ -2323,6 +3348,7 @@ function DealersPage({ notify }) {
         }
       />
       {error && <Notice message={error} />}
+      {items.some((dealer) => dealer.totalPurchaseAmount === null) && <FinancialLockedBanner />}
       <div className="dealer-layout">
         <section className="dealer-list">
           {loading ? (
@@ -2365,7 +3391,7 @@ function DealersPage({ notify }) {
                   </div>
                   <div>
                     <span>Total purchased</span>
-                    <strong>{money(dealer.totalPurchaseAmount || 0)}</strong>
+                    <strong>{money(dealer.totalPurchaseAmount === null ? null : dealer.totalPurchaseAmount || 0)}</strong>
                   </div>
                   <div>
                     <span>Currently in stock</span>

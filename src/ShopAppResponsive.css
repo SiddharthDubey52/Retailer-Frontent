@@ -1,0 +1,133 @@
+/* Responsive layer: loaded last. Covers 320px phones up to 2560px+ monitors.
+   --fs scales every font size (see ShopApp.css); layout widths grow with it on large screens. */
+
+/* ---------- Safety: grid/flex children may shrink instead of pushing the page wider ---------- */
+.panel, .dealer-list, .dealer-card, .form-main, .form-panel, .sell-search-panel, .sell-form-panel,
+.metric-card, .chart-panel, .brand-panel, .report-breakdown, .security-panel, .match-item { min-width: 0; }
+.dealer-card-top h2, .match-item strong, .sale-device-top h3 { overflow-wrap: anywhere; }
+img, svg, video, canvas { max-width: 100%; }
+.sidebar { overflow-y: auto; overscroll-behavior: contain; }
+.topbar { position: sticky; top: 0; z-index: 10; gap: 12px; backdrop-filter: blur(10px); }
+.crumb { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+.crumb > * { flex: 0 1 auto; min-width: 0; }
+.crumb strong { overflow: hidden; text-overflow: ellipsis; }
+.topbar-actions { flex: 0 0 auto; flex-wrap: nowrap; }
+.financial-chip { white-space: nowrap; }
+.topbar-actions > * { flex: 0 0 auto; }
+.button { white-space: nowrap; }
+.search-box input { align-self: stretch; height: auto; }
+.table-scroll { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+.inventory-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 12px; }
+.inventory-filters label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.inventory-filters input, .inventory-filters select { min-height: 34px; max-width: 100%; }
+
+/* ---------- Large screens: bigger type and a wider content area ---------- */
+@media (min-width: 1680px) {
+  :root { --fs: 1.08; }
+  .page-content { max-width: 1600px; }
+  .sidebar { width: 260px; }
+  .main-column { margin-left: 260px; }
+}
+@media (min-width: 1920px) {
+  :root { --fs: 1.15; }
+  .page-content { max-width: 1760px; padding-inline: 48px; }
+  .sidebar { width: 280px; padding-inline: 18px; }
+  .main-column { margin-left: 280px; }
+  .nav-link { min-height: 44px; }
+  .topbar { height: 68px; padding-inline: 48px; }
+  .chart-wrap, .brand-chart { height: 230px; }
+  .report-grid .chart-wrap { height: 250px; }
+  .form-layout { grid-template-columns: minmax(0, 1fr) 320px; }
+  .dealer-layout { grid-template-columns: minmax(0, 1fr) 340px; }
+  .modal-panel { width: min(620px, 100%); }
+}
+@media (min-width: 2400px) {
+  :root { --fs: 1.3; }
+  .page-content { max-width: 2100px; padding-inline: 64px; }
+  .sidebar { width: 320px; }
+  .main-column { margin-left: 320px; }
+  .nav-link { min-height: 50px; }
+  .topbar { height: 76px; padding-inline: 64px; }
+  .chart-wrap, .brand-chart { height: 280px; }
+  .report-grid .chart-wrap { height: 300px; }
+  .form-layout { grid-template-columns: minmax(0, 1fr) 380px; }
+  .dealer-layout { grid-template-columns: minmax(0, 1fr) 400px; }
+  .modal-panel { width: min(720px, 100%); }
+}
+
+/* ---------- Short screens (landscape phones, small laptops) ---------- */
+@media (max-height: 720px) and (min-width: 801px) {
+  .plan-note { display: none; }
+  .store-switch { margin: 16px 2px 14px; }
+  .nav-link { min-height: 36px; }
+}
+
+/* ---------- Tablets and below ---------- */
+@media (max-width: 1100px) {
+  .sell-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .report-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 800px) {
+  .dealer-layout, .sell-layout, .form-layout, .dashboard-grid { grid-template-columns: minmax(0, 1fr); }
+  .security-grid { grid-template-columns: minmax(0, 1fr); }
+  .heading-action { max-width: 100%; }
+  .export-actions { flex-wrap: wrap; }
+}
+
+/* ---------- Compact top bar below 900px ---------- */
+@media (max-width: 900px) {
+  .top-signout { width: 40px; padding: 0; font-size: 0; gap: 0; }
+  .top-signout svg { width: 17px; height: 17px; }
+  .financial-chip .chip-label { display: none; }
+}
+
+/* ---------- Touch screens: comfortable tap targets ---------- */
+@media (max-width: 800px), (pointer: coarse) {
+  .button { min-height: 42px; }
+  .icon-button { width: 40px; height: 40px; }
+  .field input, .field select, .field textarea, .custom-dates input,
+  .inventory-filters input, .inventory-filters select, .search-box { min-height: 42px; }
+  .period-tabs button { min-height: 36px; }
+  .text-link, .back-link, .text-button { min-height: 36px; display: inline-flex; align-items: center; }
+  .mobile-menu { width: 40px; height: 40px; }
+  .financial-chip { min-height: 36px; }
+  .financial-chip.locked { min-width: 40px; justify-content: center; }
+  .financial-chip.unlocked button { min-height: 32px; padding: 0 4px; }
+  .match-item { padding: 12px; }
+}
+
+/* ---------- Phones ---------- */
+@media (max-width: 560px) {
+  .topbar { gap: 8px; }
+  .topbar-actions { gap: 6px; }
+  .financial-chip { padding: 5px 9px; }
+  .page-heading { flex-wrap: wrap; }
+  .page-heading p { max-width: none; }
+  .heading-action { margin-top: 4px; flex: 1 1 100%; min-width: 0; }
+  .export-actions { width: 100%; }
+  .date-tag { width: fit-content; padding: 7px 10px; font-size: calc(12px * var(--fs)); }
+  .export-actions .button { flex: 1 1 0; min-width: 0; padding-inline: 8px; }
+  .inventory-filters label { flex: 1 1 140px; }
+  .last-six-form .sell-imei-row > button { grid-column: 1 / -1; grid-row: auto; }
+  .sale-device-details, .detail-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .dealer-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dealer-stats strong, .dealer-stats span { overflow-wrap: anywhere; }
+  .financial-banner .button { margin-left: 0; width: 100%; }
+  .pin-actions .button { flex: 1; }
+  .report-summary-bar strong, .metric-value { white-space: normal; overflow-wrap: anywhere; }
+}
+@media (max-width: 420px) {
+  .crumb > span:not(.crumb-slash):first-child, .crumb > .crumb-slash { display: none; }
+  .field-grid { grid-template-columns: minmax(0, 1fr); }
+  .metric-strip, .report-summary-bar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .export-actions .button { flex: 1; }
+}
+@media (max-width: 360px) {
+  .topbar { padding-inline: 10px; gap: 6px; }
+  .financial-chip { padding: 4px 7px; gap: 4px; }
+  .metric-grid, .report-metrics { grid-template-columns: minmax(0, 1fr); }
+  .sale-device-details, .detail-grid { grid-template-columns: minmax(0, 1fr); }
+  .connection-pill { display: none; }
+  .page-content { padding-inline: 12px; }
+  .page-content .table-panel { margin-inline: -12px; }
+}
