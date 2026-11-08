@@ -51,6 +51,7 @@ import {
 import "./ShopApp.css";
 import "./ShopAppExtras.css";
 
+const MANUAL_LOOKUP_MESSAGE = "Device details could not be identified automatically. Please enter the details manually.";
 const apiBase = (import.meta.env.VITE_API_URL || "/api").replace(/\/$/, "");
 const TOKEN_KEY = "shop_token";
 const getToken = () => {
@@ -78,7 +79,10 @@ async function api(path, options = {}) {
   if (result.token) setToken(result.token);
   if (response.status === 401) setToken(null);
   if (!response.ok)
-    throw new Error(result.message || `Request failed (${response.status})`);
+    throw Object.assign(new Error(result.message || `Request failed (${response.status})`), {
+      status: response.status,
+      data: result,
+    });
   return result;
 }
 
@@ -1168,14 +1172,24 @@ function StockPage({ notify }) {
             model: result.data.deviceName || current.model,
             modelNumber: result.data.modelNumber || current.modelNumber,
           }));
+          const sourceLabel = result.source === "local_database" ? "local TAC database" : "HiCellTek IMEI API";
+          const missingLabels = { brandName: "brand", deviceName: "device name", modelNumber: "model number" };
+          const missing = (result.missingFields || []).map((field) => missingLabels[field] || field);
           setLookupSuccess(true);
-          setLookupNote(`Device details found from ${result.source === "local_database" ? "local TAC database" : "IMEI lookup API"}. Review and edit if needed.`);
+          setLookupNote(missing.length
+            ? `Device details partly found from ${sourceLabel}. Please enter the ${missing.join(", ")} manually.`
+            : `Device details found from ${sourceLabel}. Review and edit if needed.`);
         } else {
-          const apiNote = result.externalError ? ` ${result.externalError}` : "";
-          setLookupNote(`${result.message || "Device information not found. Please enter the details manually."}${apiNote}`);
+          setLookupNote(result.message || MANUAL_LOOKUP_MESSAGE);
         }
       } catch (requestError) {
-        if (active) setLookupNote(`Device information not found. Please enter the details manually. ${requestError.message}`);
+        if (!active) return;
+        const detail = requestError.data?.fallbackError?.code === "hicelltek_quota"
+          ? " (Online lookup limit reached for now.)"
+          : "";
+        setLookupNote(requestError.status === 400
+          ? requestError.message
+          : `${requestError.data?.message || MANUAL_LOOKUP_MESSAGE}${detail}`);
       } finally {
         if (active) setLookupBusy(false);
       }
