@@ -165,3 +165,11 @@
 .sale-confirm { display: flex; flex-direction: column; gap: 14px; }
 .sale-confirm .sale-ledger { padding-top: 0; }
 .sale-confirm-warning { display: flex; align-items: center; gap: 7px; margin: 0; padding: 10px 12px; color: #9a5b22; border: 1px solid #f1e0cc; border-radius: 5px; background: #fdf7ef; font-size: calc(12px * var(--fs)); font-weight: 600; }
+
+/* Edit and delete actions */
+.row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.icon-button.row-delete:hover { color: #a24f44; }
+.confirm-message { margin: 0; color: #48584d; font-size: calc(13px * var(--fs)); line-height: 1.55; overflow-wrap: anywhere; }
+.button.delete-confirm { color: #fff; background: #b4493b; border-color: #b4493b; }
+.button.delete-confirm:hover:not(:disabled) { background: #9c3b2f; border-color: #9c3b2f; }
+.edit-note { margin: 0; color: #809087; font-size: calc(11.5px * var(--fs)); line-height: 1.5; }

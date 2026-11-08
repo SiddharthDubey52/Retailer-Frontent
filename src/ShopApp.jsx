@@ -566,7 +566,7 @@ function Workspace({ user, signOut, notify, toast }) {
             <Route path="/invoices/:id" element={<InvoiceDetailPage notify={notify} />} />
             <Route path="/invoices/:id/edit" element={<InvoiceFormPage notify={notify} />} />
             <Route path="/sell" element={<SellPage notify={notify} />} />
-            <Route path="/sold" element={<SoldPage />} />
+            <Route path="/sold" element={<SoldPage notify={notify} />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/dealers" element={<DealersPage notify={notify} />} />
             <Route path="/security" element={<SecurityPage notify={notify} />} />
@@ -1293,15 +1293,11 @@ function InvoiceDetailPage({ notify }) {
   useEffect(() => {
     api(`/purchase-invoices/${id}/stock?page=${page}&limit=20`).then(setStock).catch(() => {});
   }, [id, page, fin.version]);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   async function remove() {
-    if (!window.confirm(`Delete invoice ${data.invoice.invoiceNumber}? This cannot be undone.`)) return;
-    try {
-      await api(`/purchase-invoices/${id}`, { method: "DELETE" });
-      notify("Invoice deleted.");
-      navigate("/invoices");
-    } catch (requestError) {
-      setError(requestError.message);
-    }
+    await api(`/purchase-invoices/${id}`, { method: "DELETE" });
+    notify("Invoice deleted.");
+    navigate("/invoices");
   }
   if (error && !data) return <Notice message={error} />;
   if (!data) return <Loading />;
@@ -1324,7 +1320,7 @@ function InvoiceDetailPage({ notify }) {
               <NavLink className="button primary" to={`/purchases?invoice=${invoice._id}`}><PackagePlus size={16} />Add phones</NavLink>
             )}
             <NavLink className="button outline" to={`/invoices/${invoice._id}/edit`}><Pencil size={16} />Edit</NavLink>
-            {invoice.addedQuantity === 0 && <button type="button" className="button outline danger" onClick={remove}><Trash2 size={16} />Delete</button>}
+            {invoice.addedQuantity === 0 && <button type="button" className="button outline danger" onClick={() => setConfirmingDelete(true)}><Trash2 size={16} />Delete</button>}
           </div>
         </div>
         <div className="invoice-qty">
@@ -1377,6 +1373,14 @@ function InvoiceDetailPage({ notify }) {
         </div>
         {stock && <Pagination page={page} pages={stock.pages} onPage={setPage} />}
       </section>
+      {confirmingDelete && (
+        <ConfirmDelete
+          title="Delete invoice"
+          message={`Delete invoice ${invoice.invoiceNumber} from ${invoice.dealerName}? Its uploaded file is deleted too.`}
+          onConfirm={remove}
+          onClose={() => setConfirmingDelete(false)}
+        />
+      )}
     </>
   );
 }
@@ -1768,6 +1772,9 @@ function InventoryPage({ notify }) {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     let active = true;
     const params = new URLSearchParams({ search, page: String(page), limit: "20", ...filters });
@@ -1789,30 +1796,21 @@ function InventoryPage({ notify }) {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [search, filters, page, fin.version]);
-  async function updatePrice(item) {
+  }, [search, filters, page, fin.version, reload]);
+  // Editing shows the purchase price, so it needs financial access.
+  async function openEdit(item) {
     if (!(await fin.ensureUnlocked())) return;
-    const current = await api(`/inventory/${item._id}`).catch(() => null);
-    const value = window.prompt(
-      "Update purchase price",
-      String(current?.item?.purchasePrice ?? ""),
-    );
-    if (value === null) return;
-    const price = Number(value);
-    if (!Number.isFinite(price) || price < 0)
-      return notify("Enter a valid purchase price.");
     try {
-      await api(`/inventory/${item._id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ purchasePrice: price }),
-      });
-      notify("Inventory details updated.");
-      const params = new URLSearchParams({ search, page: String(page), limit: "20", ...filters });
-      const result = await api(`/inventory?${params}`);
-      setItems(result.items);
+      setEditing((await api(`/inventory/${item._id}`)).item);
     } catch (requestError) {
       notify(requestError.message);
     }
+  }
+  async function removeItem() {
+    const result = await api(`/inventory/${deleting._id}`, { method: "DELETE" });
+    notify(result.message);
+    if (items.length === 1 && page > 1) setPage(page - 1);
+    else setReload((current) => current + 1);
   }
   return (
     <>
@@ -1901,13 +1899,14 @@ function InventoryPage({ notify }) {
                       <Badge status={item.status} />
                     </td>
                     <td>
-                      <button
-                        className="icon-button"
-                        title="Edit purchase price"
-                        onClick={() => updatePrice(item)}
-                      >
-                        <Settings2 size={17} />
-                      </button>
+                      <div className="row-actions">
+                        <button className="icon-button" title="Edit mobile" aria-label={`Edit ${item.brand} ${item.model}`} onClick={() => openEdit(item)}>
+                          <Pencil size={16} />
+                        </button>
+                        <button className="icon-button row-delete" title="Delete mobile" aria-label={`Delete ${item.brand} ${item.model}`} onClick={() => setDeleting(item)}>
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1938,7 +1937,106 @@ function InventoryPage({ notify }) {
           <Pagination page={page} pages={pages} onPage={setPage} />
         </section>
       )}
+      {editing && (
+        <EditStockModal
+          item={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            notify("Mobile details updated.");
+            setReload((current) => current + 1);
+          }}
+        />
+      )}
+      {deleting && (
+        <ConfirmDelete
+          title="Delete mobile"
+          message={`Delete ${deleting.brand} ${deleting.model} (IMEI ${deleting.imei1}) from stock?${deleting.purchaseInvoiceId ? ` One phone is given back to invoice ${deleting.invoiceNumber}.` : ""}`}
+          onConfirm={removeItem}
+          onClose={() => setDeleting(null)}
+        />
+      )}
     </>
+  );
+}
+
+const STOCK_EDIT_FIELDS = ["imei1", "imei2", "serialNumber", "brand", "model", "modelNumber", "color", "ram", "storage", "dealer", "dealerName", "invoiceNumber", "purchaseDate", "purchasePrice"];
+const stockEditForm = (item) => ({
+  ...Object.fromEntries(STOCK_EDIT_FIELDS.map((key) => [key, item[key] ?? ""])),
+  purchaseDate: String(item.purchaseDate || "").slice(0, 10),
+  purchasePrice: String(item.purchasePrice ?? ""),
+});
+
+function EditStockModal({ item, onClose, onSaved }) {
+  const [original] = useState(() => stockEditForm(item));
+  const [form, setForm] = useState(original);
+  const [dealers, setDealers] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const linked = Boolean(item.purchaseInvoiceId);
+  useEffect(() => {
+    if (linked) return;
+    api("/dealers").then(({ items }) => setDealers(items)).catch(() => {});
+  }, [linked]);
+  const update = (key) => (value) => setForm((current) => ({ ...current, [key]: value }));
+  const digits = (key) => (value) => update(key)(value.replace(/\D/g, "").slice(0, 15));
+  async function submit(event) {
+    event.preventDefault();
+    if (!isValidImeiClient(form.imei1)) return setError("Enter a valid 15-digit IMEI 1.");
+    if (form.imei2 && !isValidImeiClient(form.imei2)) return setError("Enter a valid 15-digit IMEI 2, or leave it empty.");
+    if (form.imei1 === form.imei2) return setError("IMEI 1 and IMEI 2 must be different.");
+    const managed = linked ? ["dealer", "dealerName", "invoiceNumber", "purchaseDate"] : [];
+    const changes = {};
+    for (const key of STOCK_EDIT_FIELDS) if (!managed.includes(key) && form[key] !== original[key]) changes[key] = form[key];
+    if (changes.purchasePrice !== undefined) changes.purchasePrice = Number(changes.purchasePrice);
+    if (!Object.keys(changes).length) return onClose();
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/inventory/${item._id}`, { method: "PATCH", body: JSON.stringify(changes) });
+      onSaved();
+    } catch (requestError) {
+      setError(requestError.message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Edit mobile" onClose={() => !busy && onClose()}>
+      <form className="stack-form" onSubmit={submit}>
+        <div className="field-grid">
+          <Field label="IMEI 1" value={form.imei1} onChange={digits("imei1")} required inputMode="numeric" maxLength={15} />
+          <Field label="IMEI 2" value={form.imei2} onChange={digits("imei2")} inputMode="numeric" maxLength={15} placeholder="Optional" />
+          <Field label="Serial number (S/N)" value={form.serialNumber} onChange={(value) => update("serialNumber")(value.toUpperCase())} maxLength={60} />
+          <Field label="Brand name" value={form.brand} onChange={update("brand")} required />
+          <Field label="Device name" value={form.model} onChange={update("model")} required />
+          <Field label="Model number" value={form.modelNumber} onChange={update("modelNumber")} />
+          <Field label="Color" value={form.color} onChange={update("color")} />
+          <Field label="RAM" value={form.ram} onChange={update("ram")} />
+          <Field label="Storage / ROM" value={form.storage} onChange={update("storage")} />
+          {!linked && (
+            <>
+              <label className="field">
+                <span>Dealer</span>
+                <select value={form.dealer} onChange={(event) => update("dealer")(event.target.value)}>
+                  <option value="">Not listed</option>
+                  {dealers.map((dealer) => <option key={dealer._id} value={dealer._id}>{dealer.name}</option>)}
+                </select>
+              </label>
+              {!form.dealer && <Field label="Dealer name (manual)" value={form.dealerName} onChange={update("dealerName")} />}
+              <Field label="Invoice number" value={form.invoiceNumber} onChange={update("invoiceNumber")} />
+              <Field label="Purchase date" type="date" value={form.purchaseDate} onChange={update("purchaseDate")} required />
+            </>
+          )}
+          <Field label="Dealer purchase price" type="number" value={form.purchasePrice} onChange={update("purchasePrice")} required min="0" step="0.01" />
+        </div>
+        {linked && <p className="edit-note">Dealer, invoice number and date come from invoice {item.invoiceNumber}. Change them on the invoice.</p>}
+        {error && <Notice message={error} />}
+        <div className="pin-actions">
+          <button type="button" className="button outline" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="button primary" disabled={busy}>{busy ? "Saving…" : "Save changes"}</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -2010,6 +2108,7 @@ function StockPage({ notify }) {
   const [lookupNote, setLookupNote] = useState("");
   const [lookupSuccess, setLookupSuccess] = useState(false);
   const [lookupRequest, setLookupRequest] = useState(0);
+  const [imeiTaken, setImeiTaken] = useState(false);
   useEffect(() => {
     api("/dealers")
       .then(({ items }) => setDealers(items))
@@ -2029,6 +2128,14 @@ function StockPage({ notify }) {
         return;
       }
       try {
+        // A phone that is already recorded must not be added, so skip the (possibly paid) lookup.
+        const existing = await api(`/inventory/check-imei?imei=${imei}`);
+        if (!active) return;
+        if (existing.exists) {
+          setImeiTaken(true);
+          setLookupNote(existing.message);
+          return;
+        }
         const result = await api("/device-lookup", {
           method: "POST",
           body: JSON.stringify({ imei }),
@@ -2079,6 +2186,7 @@ function StockPage({ notify }) {
     }));
     setLookupNote("");
     setLookupSuccess(false);
+    setImeiTaken(false);
     setError("");
   }
   function lookup() {
@@ -2092,6 +2200,10 @@ function StockPage({ notify }) {
   async function submit(event) {
     event.preventDefault();
     setError("");
+    if (form.imei2 && form.imei1 === form.imei2) {
+      setError("IMEI 1 and IMEI 2 must be different.");
+      return;
+    }
     // Entering a dealer purchase price is protected; the API enforces this too.
     if (!(await fin.ensureUnlocked())) {
       setError("Unlock financial information with your PIN to save the purchase price.");
@@ -2104,9 +2216,8 @@ function StockPage({ notify }) {
           api(`/inventory/check-imei?imei=${encodeURIComponent(imei)}`),
         ),
       );
-      if (duplicateChecks.some((check) => check.exists)) {
-        throw new Error("This IMEI is already recorded in inventory.");
-      }
+      const taken = duplicateChecks.find((check) => check.exists);
+      if (taken) throw new Error(taken.message);
       const payload = invoice
         ? { ...form, dealer: "", dealerName: "", invoiceNumber: "", purchaseDate: undefined, purchaseInvoiceId: invoice._id }
         : { ...form };
@@ -2346,7 +2457,7 @@ function StockPage({ notify }) {
               <i />
               Will be added as in stock
             </div>
-            <button className="button primary wide" disabled={busy}>
+            <button className="button primary wide" disabled={busy || imeiTaken}>
               {busy ? (
                 "Saving mobile…"
               ) : (
@@ -2357,7 +2468,7 @@ function StockPage({ notify }) {
               )}
             </button>
             <p className="aside-footnote">
-              Each IMEI is recorded separately. Duplicate IMEIs are rejected.
+              An IMEI can be recorded only once, even after the phone is sold.
             </p>
           </div>
         </aside>
@@ -2790,11 +2901,14 @@ function SellPage({ notify }) {
   );
 }
 
-function SoldPage() {
+function SoldPage({ notify }) {
   const fin = useFinancial();
   const [locked, setLocked] = useState(false);
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [reload, setReload] = useState(0);
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [total, setTotal] = useState(0);
@@ -2811,7 +2925,25 @@ function SoldPage() {
       })
       .catch((requestError) => setError(requestError.message))
       .finally(() => setLoading(false));
-  }, [page, fin.version]);
+  }, [page, fin.version, reload]);
+  // Both change profit figures, so they need financial access (the API enforces this too).
+  async function openEdit(sale) {
+    if (!(await fin.ensureUnlocked())) return;
+    try {
+      setEditing((await api(`/sales/${sale._id}`)).sale);
+    } catch (requestError) {
+      notify(requestError.message);
+    }
+  }
+  async function openDelete(sale) {
+    if (await fin.ensureUnlocked()) setDeleting(sale);
+  }
+  async function removeSale() {
+    const result = await api(`/sales/${deleting._id}`, { method: "DELETE" });
+    notify(result.message);
+    if (items.length === 1 && page > 1) setPage(page - 1);
+    else setReload((current) => current + 1);
+  }
   return (
     <>
       <Heading
@@ -2843,7 +2975,7 @@ function SoldPage() {
                   <th>Net profit</th>
                   <th>Sold on</th>
                   <th>Status</th>
-                  <th>Details</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -2873,14 +3005,22 @@ function SoldPage() {
                       <Badge status="SOLD" />
                     </td>
                     <td>
-                      <button
-                        className="icon-button eye-button"
-                        title="View sale details"
-                        aria-label="View sale details"
-                        onClick={() => setSelected(sale)}
-                      >
-                        <Eye size={18} />
-                      </button>
+                      <div className="row-actions">
+                        <button
+                          className="icon-button eye-button"
+                          title="View sale details"
+                          aria-label="View sale details"
+                          onClick={() => setSelected(sale)}
+                        >
+                          <Eye size={18} />
+                        </button>
+                        <button className="icon-button" title="Edit sale" aria-label="Edit sale" onClick={() => openEdit(sale)}>
+                          <Pencil size={16} />
+                        </button>
+                        <button className="icon-button row-delete" title="Delete sale" aria-label="Delete sale" onClick={() => openDelete(sale)}>
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -2900,7 +3040,82 @@ function SoldPage() {
       {selected && (
         <SaleModal sale={selected} onClose={() => setSelected(null)} />
       )}
+      {editing && (
+        <EditSaleModal
+          sale={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            notify("Sale updated.");
+            setReload((current) => current + 1);
+          }}
+        />
+      )}
+      {deleting && (
+        <ConfirmDelete
+          title="Delete sale"
+          message={`Delete this sale of ${deleting.snapshot.brand} ${deleting.snapshot.model} (IMEI ${deleting.snapshot.imei1})? The phone goes back to stock and its sale and profit are removed from your reports.`}
+          onConfirm={removeSale}
+          onClose={() => setDeleting(null)}
+        />
+      )}
     </>
+  );
+}
+
+function EditSaleModal({ sale, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    sellingPrice: String(sale.sellingPrice),
+    discount: String(sale.discount || 0),
+    additionalExpenses: String(sale.additionalExpenses || 0),
+    customerName: sale.customer?.name || "",
+    customerPhone: sale.customer?.phone || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const update = (key) => (value) => setForm((current) => ({ ...current, [key]: value }));
+  const netProfit = Number(form.sellingPrice || 0) - sale.purchasePrice - Number(form.additionalExpenses || 0);
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/sales/${sale._id}`, { method: "PATCH", body: JSON.stringify(form) });
+      onSaved();
+    } catch (requestError) {
+      setError(requestError.message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Edit sale" onClose={() => !busy && onClose()}>
+      <form className="stack-form" onSubmit={submit}>
+        <div className="modal-device">
+          <span className="device-thumb large"><Smartphone size={21} /></span>
+          <div>
+            <h3>{sale.snapshot.brand} {sale.snapshot.model}</h3>
+            <p>IMEI {sale.snapshot.imei1}</p>
+          </div>
+        </div>
+        <div className="field-grid">
+          <Field label="Selling price" type="number" value={form.sellingPrice} onChange={update("sellingPrice")} min="0.01" step="0.01" required />
+          <Field label="Discount" type="number" value={form.discount} onChange={update("discount")} min="0" step="0.01" />
+          <Field label="Additional expenses" type="number" value={form.additionalExpenses} onChange={update("additionalExpenses")} min="0" step="0.01" />
+          <Field label="Customer name" value={form.customerName} onChange={update("customerName")} placeholder="Optional" />
+          <Field label="Customer phone" type="tel" value={form.customerPhone} onChange={update("customerPhone")} placeholder="Optional" />
+        </div>
+        <div className="profit-preview">
+          <span>Net profit after this change</span>
+          <strong>{money(netProfit)}</strong>
+          <small>Selling price − purchase price − expenses</small>
+        </div>
+        {error && <Notice message={error} />}
+        <div className="pin-actions">
+          <button type="button" className="button outline" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="button primary" disabled={busy}>{busy ? "Saving…" : "Save changes"}</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -3303,6 +3518,10 @@ function DealersPage({ notify }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState("");
+  const [deleting, setDeleting] = useState(null);
   async function load() {
     try {
       setItems((await api("/dealers")).items);
@@ -3338,36 +3557,28 @@ function DealersPage({ notify }) {
       setBusy(false);
     }
   }
-  async function edit(dealer) {
-    const name = window.prompt("Dealer name", dealer.name);
-    if (name === null) return;
-    const phone = window.prompt("Phone number", dealer.phone || "");
-    if (phone === null) return;
+  async function saveEdit(event) {
+    event.preventDefault();
+    setEditBusy(true);
+    setEditError("");
     try {
-      await api(`/dealers/${dealer._id}`, {
+      await api(`/dealers/${editing._id}`, {
         method: "PATCH",
-        body: JSON.stringify({ name, phone }),
+        body: JSON.stringify({ name: editing.name, phone: editing.phone || "", address: editing.address || "" }),
       });
+      setEditing(null);
       notify("Dealer updated.");
       load();
     } catch (requestError) {
-      notify(requestError.message);
+      setEditError(requestError.message);
+    } finally {
+      setEditBusy(false);
     }
   }
-  async function remove(dealer) {
-    if (
-      !window.confirm(
-        `Remove ${dealer.name}? Dealers with purchase history will be archived.`,
-      )
-    )
-      return;
-    try {
-      const result = await api(`/dealers/${dealer._id}`, { method: "DELETE" });
-      notify(result.message);
-      load();
-    } catch (requestError) {
-      notify(requestError.message);
-    }
+  async function remove() {
+    const result = await api(`/dealers/${deleting._id}`, { method: "DELETE" });
+    notify(result.message);
+    load();
   }
   return (
     <>
@@ -3406,16 +3617,18 @@ function DealersPage({ notify }) {
                     <button
                       className="icon-button"
                       title="Edit dealer"
-                      onClick={() => edit(dealer)}
+                      aria-label={`Edit ${dealer.name}`}
+                      onClick={() => { setEditError(""); setEditing(dealer); }}
                     >
-                      <Settings2 size={17} />
+                      <Pencil size={16} />
                     </button>
                     <button
-                      className="icon-button"
-                      title="Delete or archive dealer"
-                      onClick={() => remove(dealer)}
+                      className="icon-button row-delete"
+                      title="Delete dealer"
+                      aria-label={`Delete ${dealer.name}`}
+                      onClick={() => setDeleting(dealer)}
                     >
-                      <X size={17} />
+                      <Trash2 size={16} />
                     </button>
                   </div>
                 </div>
@@ -3494,6 +3707,31 @@ function DealersPage({ notify }) {
           </form>
         </section>
       </div>
+      {editing && (
+        <Modal title="Edit dealer" onClose={() => !editBusy && setEditing(null)}>
+          <form className="stack-form" onSubmit={saveEdit}>
+            <Field label="Dealer name" value={editing.name} onChange={(name) => setEditing({ ...editing, name })} required minLength={2} autoFocus />
+            <Field label="Phone number" type="tel" value={editing.phone || ""} onChange={(phone) => setEditing({ ...editing, phone })} placeholder="Optional" />
+            <label className="field">
+              <span>Address</span>
+              <textarea rows="3" value={editing.address || ""} onChange={(event) => setEditing({ ...editing, address: event.target.value })} placeholder="Optional" />
+            </label>
+            {editError && <Notice message={editError} />}
+            <div className="pin-actions">
+              <button type="button" className="button outline" onClick={() => setEditing(null)} disabled={editBusy}>Cancel</button>
+              <button className="button primary" disabled={editBusy}>{editBusy ? "Saving…" : "Save changes"}</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {deleting && (
+        <ConfirmDelete
+          title="Delete dealer"
+          message={`Delete ${deleting.name}?${deleting.purchaseCount ? " This dealer has purchase history, so it will be archived and its past records kept." : ""}`}
+          onConfirm={remove}
+          onClose={() => setDeleting(null)}
+        />
+      )}
     </>
   );
 }
@@ -3617,6 +3855,38 @@ function Modal({ title, onClose, children }) {
         <div className="modal-body">{children}</div>
       </section>
     </div>
+  );
+}
+
+// Second step for every delete. Cancel has focus so a stray Enter cannot delete anything.
+function ConfirmDelete({ title, message, onConfirm, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function confirm() {
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm();
+      onClose();
+    } catch (requestError) {
+      setError(requestError.message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={title} onClose={() => !busy && onClose()}>
+      <div className="sale-confirm">
+        <p className="confirm-message">{message}</p>
+        <p className="sale-confirm-warning"><CircleAlert size={15} /> This cannot be undone.</p>
+        {error && <Notice message={error} />}
+        <div className="pin-actions">
+          <button type="button" className="button outline" onClick={onClose} disabled={busy} autoFocus>Cancel</button>
+          <button type="button" className="button delete-confirm" onClick={confirm} disabled={busy}>
+            <Trash2 size={16} />{busy ? "Deleting…" : "Yes, delete"}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
