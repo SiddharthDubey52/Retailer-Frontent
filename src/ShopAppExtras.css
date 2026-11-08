@@ -160,3 +160,8 @@
   .invoice-file-row .button { flex: 1 1 auto; }
 }
 @media (max-width: 380px) { .invoice-facts { grid-template-columns: minmax(0, 1fr); } .invoice-qty strong { font-size: calc(18px * var(--fs)); } }
+
+/* Sell-out confirmation dialog */
+.sale-confirm { display: flex; flex-direction: column; gap: 14px; }
+.sale-confirm .sale-ledger { padding-top: 0; }
+.sale-confirm-warning { display: flex; align-items: center; gap: 7px; margin: 0; padding: 10px 12px; color: #9a5b22; border: 1px solid #f1e0cc; border-radius: 5px; background: #fdf7ef; font-size: calc(12px * var(--fs)); font-weight: 600; }

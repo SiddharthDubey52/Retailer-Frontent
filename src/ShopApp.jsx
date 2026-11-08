@@ -2410,6 +2410,8 @@ function SellPage({ notify }) {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState("");
   // Loads the full stock record (purchase price is only included when unlocked).
   async function selectDevice(item, saleImei) {
     setError("");
@@ -2475,23 +2477,25 @@ function SellPage({ notify }) {
       setError(requestError.message);
     }
   }
-  async function submit(event) {
+  // "Sell out" only opens the confirmation dialog; recordSale runs when it is confirmed.
+  function submit(event) {
     event.preventDefault();
-    if (
-      !device ||
-      !window.confirm(
-        `Confirm sale\n\n${device.brand} ${device.model}${device.modelNumber ? ` (${device.modelNumber})` : ""}\nIMEI ending ${(device.saleImei || device.imei1).slice(-6)}\nSelling price: ${money(Number(form.sellingPrice))}\n\nThis cannot be undone.`,
-      )
-    )
-      return;
+    if (!device) return;
+    setConfirmError("");
+    setConfirming(true);
+  }
+  async function recordSale() {
+    if (!device || busy) return;
     setBusy(true);
     setError("");
+    setConfirmError("");
     try {
       await api("/sales", {
         method: "POST",
         body: JSON.stringify({ imei: device.saleImei || device.imei1, ...form }),
       });
       notify("Sale recorded and inventory updated.");
+      setConfirming(false);
       setDevice(null);
       setImei("");
       setLastSix("");
@@ -2504,7 +2508,7 @@ function SellPage({ notify }) {
         customerPhone: "",
       });
     } catch (requestError) {
-      setError(requestError.message);
+      setConfirmError(requestError.message);
     } finally {
       setBusy(false);
     }
@@ -2750,6 +2754,37 @@ function SellPage({ notify }) {
           }}
           onClose={() => setScanner(false)}
         />
+      )}
+      {confirming && device && (
+        <Modal title="Confirm sale" onClose={() => !busy && setConfirming(false)}>
+          <div className="sale-confirm">
+            <div className="modal-device">
+              <span className="device-thumb large">
+                <Smartphone size={21} />
+              </span>
+              <div>
+                <h3>{device.brand} {device.model}</h3>
+                {device.modelNumber && <p>{device.modelNumber}</p>}
+              </div>
+            </div>
+            <div className="sale-ledger">
+              <Detail label="IMEI ending" value={(device.saleImei || device.imei1).slice(-6)} />
+              <Detail label="Selling price" value={money(Number(form.sellingPrice))} />
+            </div>
+            <p className="sale-confirm-warning">
+              <CircleAlert size={15} /> This cannot be undone.
+            </p>
+            {confirmError && <Notice message={confirmError} />}
+            <div className="pin-actions">
+              <button type="button" className="button outline" onClick={() => setConfirming(false)} disabled={busy} autoFocus>
+                Cancel
+              </button>
+              <button type="button" className="button primary" onClick={recordSale} disabled={busy}>
+                {busy ? "Recording sale…" : "Confirm sale"}
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
     </>
   );
@@ -3572,7 +3607,7 @@ function Modal({ title, onClose, children }) {
       className="modal-backdrop"
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
-      <section className="modal-panel">
+      <section className="modal-panel" role="dialog" aria-modal="true" aria-label={title}>
         <header className="modal-header">
           <h2>{title}</h2>
           <button className="icon-button" onClick={onClose} aria-label="Close">
